@@ -1,0 +1,1962 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>视频转换器 · 交互原型 v0.1</title>
+<!--
+  ============================================================================
+  视频转换器 · Electron 桌面客户端交互原型
+  ----------------------------------------------------------------------------
+  · 纯 UI 层：不对接真实转换引擎，不包含进程通信与主进程逻辑
+  · 进度、耗时、体积均为模拟数据，用于校验交互与信息层级
+  · 设计依据：《UI设计规范与低保真草图.md》§2 设计 Token / §5 五个页面
+  · 样式全部按 Token 手写，不依赖任何 CDN —— 双击即可离线打开
+  后续接入真实工程时：Token 迁移到 Tailwind 主题变量，组件替换为 shadcn/ui
+  ============================================================================
+-->
+<style>
+/* ===========================================================================
+   1. 设计 Token
+   =========================================================================== */
+:root{
+  /* 主色 · 柔和蓝 */
+  --primary-50:#EEF3FE; --primary-100:#DCE7FD; --primary-400:#6B93F5;
+  --primary-500:#3D6FF0; --primary-600:#2C5BD8; --primary-700:#1F47B0;
+
+  /* 中性色 · 冷灰 */
+  --bg-app:#F7F8FA; --bg-surface:#FFFFFF; --bg-subtle:#F1F3F7;
+  --border-default:#E5E8EE; --border-strong:#D3D8E2;
+  --text-primary:#1A1F2B; --text-secondary:#5A6478; --text-tertiary:#8A93A6;
+
+  /* 语义色 */
+  --success:#16A34A; --success-bg:#ECFDF3; --success-border:#BBF7D0;
+  --warn:#D97706;    --warn-bg:#FFFBEB;    --warn-border:#FDE68A;
+  --accent:#EA580C;  --accent-bg:#FFF7ED;  --accent-border:#FED7AA;
+  --danger:#DC2626;  --danger-bg:#FEF2F2;  --danger-border:#FECACA;
+
+  /* 圆角 */
+  --r-sm:4px; --r-md:6px; --r-lg:8px; --r-xl:12px; --r-2xl:16px;
+
+  /* 阴影 · 轻 */
+  --sh-xs:0 1px 2px rgba(15,23,42,.04);
+  --sh-sm:0 1px 3px rgba(15,23,42,.06), 0 1px 2px rgba(15,23,42,.04);
+  --sh-md:0 4px 12px rgba(15,23,42,.08);
+  --sh-lg:0 12px 32px rgba(15,23,42,.12);
+  --sh-focus:0 0 0 3px rgba(61,111,240,.16);
+
+  /* 动效 */
+  --ease:cubic-bezier(.2,0,0,1);
+  --t-fast:150ms; --t-base:180ms; --t-slow:220ms;
+
+  /* 字体 */
+  --font-ui:"Microsoft YaHei UI","Microsoft YaHei","Segoe UI","PingFang SC","Noto Sans SC",system-ui,sans-serif;
+  --font-mono:"Cascadia Mono","JetBrains Mono",Consolas,ui-monospace,monospace;
+}
+
+/* 深色模式 Token 预埋（本轮不启用，切换逻辑与变量已就位）
+[data-theme="dark"]{
+  --bg-app:#0F1319; --bg-surface:#171C24; --bg-subtle:#1E242E;
+  --border-default:#262D38; --border-strong:#333B48;
+  --text-primary:#E6EAF2; --text-secondary:#98A2B3; --text-tertiary:#6B7688;
+  --primary-500:#6B93F5; --primary-50:#1A2436; --primary-100:#22304A;
+  --sh-xs:0 1px 2px rgba(0,0,0,.4);
+}
+*/
+
+/* ===========================================================================
+   2. 基础
+   =========================================================================== */
+*,*::before,*::after{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; font-family:var(--font-ui); font-size:13px; line-height:20px;
+  color:var(--text-primary); background:#E9ECF2;
+  -webkit-font-smoothing:antialiased; overflow:hidden;
+}
+h1,h2,h3,p{margin:0}
+button{font:inherit; color:inherit; background:none; border:none; padding:0; cursor:pointer}
+button:disabled{cursor:not-allowed}
+input,select{font:inherit; color:inherit}
+[hidden]{display:none !important}
+svg{display:block}
+.mono{font-family:var(--font-mono); font-variant-numeric:tabular-nums}
+
+:focus-visible{
+  outline:1.5px solid var(--primary-500); outline-offset:2px;
+  box-shadow:var(--sh-focus); border-radius:var(--r-md);
+}
+
+/* ===========================================================================
+   3. 原型舞台（桌面背景 + 缩放适配 + 尺寸切换器）
+   =========================================================================== */
+.stage{
+  position:fixed; inset:0; display:flex; align-items:center; justify-content:center;
+  flex-direction:column; gap:16px;
+}
+.stage-bar{
+  display:flex; align-items:center; gap:4px; padding:4px;
+  background:rgba(255,255,255,.72); border:1px solid rgba(255,255,255,.9);
+  border-radius:999px; box-shadow:0 2px 10px rgba(15,23,42,.06);
+}
+.stage-bar .label{
+  font-size:11px; color:var(--text-tertiary); padding:0 8px 0 10px; letter-spacing:.02em;
+}
+.stage-bar button{
+  height:26px; padding:0 12px; border-radius:999px; font-size:11px;
+  color:var(--text-secondary); transition:background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.stage-bar button:hover{background:rgba(15,23,42,.05)}
+.stage-bar button[aria-pressed="true"]{background:var(--text-primary); color:#fff; font-weight:500}
+
+.stage-inner{position:relative; flex:none}
+
+/* ===========================================================================
+   4. 窗口外壳
+   =========================================================================== */
+.win{
+  position:absolute; top:0; left:0; transform-origin:top left;
+  display:flex; flex-direction:column; overflow:hidden;
+  background:var(--bg-app); border-radius:var(--r-lg);
+  box-shadow:0 20px 60px rgba(15,23,42,.22), 0 2px 8px rgba(15,23,42,.10);
+  border:1px solid rgba(15,23,42,.08);
+}
+
+/* 标题栏 */
+.titlebar{
+  height:40px; flex:none; display:flex; align-items:center;
+  padding-left:12px; background:var(--bg-surface);
+  border-bottom:1px solid var(--border-default);
+  user-select:none;
+}
+.titlebar .app-ico{
+  width:18px; height:18px; border-radius:5px; flex:none;
+  background:var(--primary-500); display:flex; align-items:center; justify-content:center;
+  color:#fff;
+}
+.titlebar .app-ico svg{width:11px; height:11px}
+.titlebar .app-name{margin-left:8px; font-size:13px; font-weight:500; letter-spacing:.01em}
+.titlebar .spacer{flex:1}
+.win-ctrl{display:flex; align-self:stretch}
+.win-ctrl button{
+  width:46px; display:flex; align-items:center; justify-content:center;
+  color:var(--text-secondary); transition:background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.win-ctrl button:hover{background:var(--bg-subtle)}
+.win-ctrl button.close:hover{background:#E81123; color:#fff}
+.win-ctrl svg{width:10px; height:10px}
+
+.win-body{flex:1; display:flex; min-height:0}
+
+/* ===========================================================================
+   5. 侧边栏
+   =========================================================================== */
+.sidebar{
+  width:200px; flex:none; background:var(--bg-surface);
+  border-right:1px solid var(--border-default);
+  padding:12px 8px 10px; display:flex; flex-direction:column;
+}
+.nav-item{
+  position:relative; width:100%; height:36px; padding:0 10px; border-radius:var(--r-lg);
+  display:flex; align-items:center; gap:10px; color:var(--text-secondary);
+  font-size:13px; font-weight:400; text-align:left;
+  transition:background var(--t-fast) var(--ease), color var(--t-fast) var(--ease);
+}
+.nav-item:hover{background:var(--bg-subtle)}
+.nav-item .nav-ico{width:16px; height:16px; flex:none}
+.nav-item .ind{
+  position:absolute; left:-6px; top:50%; margin-top:-8px;
+  width:3px; height:16px; border-radius:2px; background:var(--primary-500);
+  transform:scaleY(0); transform-origin:center;
+  transition:transform var(--t-base) var(--ease);
+}
+.nav-item[aria-current="page"]{
+  background:var(--primary-50); color:var(--primary-600); font-weight:500;
+}
+.nav-item[aria-current="page"] .ind{transform:scaleY(1)}
+.nav-item .grow{flex:1}
+
+.nav-group{
+  font-size:11px; font-weight:500; color:var(--text-tertiary);
+  padding:20px 10px 6px; letter-spacing:.02em;
+}
+.nav-divider{height:1px; background:var(--border-default); margin:10px 10px}
+.nav-foot{margin-top:auto; padding:0 10px; font-size:11px; color:var(--text-tertiary); font-family:var(--font-mono)}
+
+/* 徽标 */
+.badge-iter{
+  font-style:normal; font-size:10px; line-height:14px; padding:1px 5px; border-radius:var(--r-sm);
+  background:var(--bg-subtle); color:var(--text-tertiary); font-weight:500; white-space:nowrap;
+}
+.badge-iter.on-head{ background:var(--bg-subtle); }
+
+/* ===========================================================================
+   6. 内容区
+   =========================================================================== */
+.content{
+  flex:1; min-width:0; overflow-y:auto; overflow-x:hidden;
+  padding:20px 32px 20px; background:var(--bg-app);
+  transition:opacity var(--t-fast) var(--ease);
+}
+.content.is-switching{opacity:0}
+.content::-webkit-scrollbar{width:8px}
+.content::-webkit-scrollbar-thumb{background:#C9D0DC; border-radius:4px}
+.content::-webkit-scrollbar-thumb:hover{background:#B4BCCC}
+.content::-webkit-scrollbar-track{background:transparent}
+
+.page-head{margin-bottom:14px}
+.page-head h1{font-size:20px; line-height:28px; font-weight:600; letter-spacing:-.01em}
+.page-head p{margin-top:2px; font-size:13px; color:var(--text-secondary)}
+
+.section-label{
+  font-size:12px; line-height:16px; font-weight:500; color:var(--text-tertiary);
+  margin:12px 0 8px; letter-spacing:.02em;
+}
+.section-head{display:flex; align-items:center; justify-content:space-between; margin:24px 0 8px}
+.section-head .section-label{margin:0}
+
+/* 卡片基类 */
+.card{
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-xl); box-shadow:var(--sh-xs);
+}
+
+/* 提示条 */
+.notice{
+  display:flex; align-items:flex-start; gap:8px;
+  padding:10px 14px; margin-bottom:4px;
+  background:var(--bg-subtle); border:1px solid var(--border-default);
+  border-radius:var(--r-lg); font-size:12px; color:var(--text-secondary);
+}
+.notice svg{width:14px; height:14px; flex:none; margin-top:2px; color:var(--text-tertiary)}
+
+/* ===========================================================================
+   7. 按钮
+   =========================================================================== */
+.btn{
+  height:36px; padding:0 16px; border-radius:var(--r-lg);
+  font-size:13px; font-weight:500; display:inline-flex; align-items:center;
+  justify-content:center; gap:6px; white-space:nowrap;
+  transition:background var(--t-fast) var(--ease), border-color var(--t-fast) var(--ease),
+             color var(--t-fast) var(--ease), transform var(--t-fast) var(--ease);
+}
+.btn:active{transform:scale(.98)}
+.btn svg{width:14px; height:14px}
+
+.btn-primary{background:var(--primary-500); color:#fff}
+.btn-primary:hover{background:var(--primary-600)}
+.btn-primary:active{background:var(--primary-700)}
+
+.btn-secondary{
+  background:var(--bg-surface); color:var(--text-primary);
+  border:1px solid var(--border-strong);
+}
+.btn-secondary:hover{border-color:var(--primary-400); color:var(--primary-600)}
+.btn-secondary:active{background:var(--bg-subtle)}
+
+.btn-ghost{border:1px solid transparent; color:var(--text-secondary)}
+.btn-ghost:hover{background:var(--bg-subtle)}
+
+.btn-text{
+  height:28px; padding:0 8px; font-size:13px; color:var(--text-secondary);
+  border-radius:var(--r-md); transition:color var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.btn-text:hover{color:var(--primary-600); background:var(--primary-50)}
+
+.btn-lg{height:40px; min-width:140px; font-size:14px}
+
+/* ===========================================================================
+   8. 首页 · 空态
+   =========================================================================== */
+.dropzone{
+  height:320px; border-radius:var(--r-2xl); background:var(--bg-surface);
+  border:2px dashed var(--border-strong);
+  display:flex; flex-direction:column; align-items:center; justify-content:center;
+  transition:border-color var(--t-base) var(--ease), background var(--t-base) var(--ease);
+}
+.dropzone .dz-icon{
+  width:56px; height:56px; border-radius:50%; background:var(--primary-50);
+  display:flex; align-items:center; justify-content:center; color:var(--primary-500);
+  transition:transform var(--t-fast) var(--ease), background var(--t-fast) var(--ease);
+}
+.dropzone .dz-icon svg{width:24px; height:24px}
+.dropzone .dz-title{margin-top:18px; font-size:20px; line-height:28px; font-weight:600}
+.dropzone .dz-sub{margin-top:6px; font-size:13px; color:var(--text-secondary)}
+.dropzone .btn{margin-top:20px}
+/* 拖拽悬停态 */
+.win.is-dragover .dropzone{
+  border-color:var(--primary-500); background:var(--primary-50);
+}
+.win.is-dragover .dropzone .dz-icon{background:#fff; transform:translateY(-4px)}
+.win.is-dragover .dropzone .dz-title{color:var(--primary-700)}
+
+.demo-row{
+  margin-top:12px; display:flex; align-items:center; justify-content:center;
+  gap:6px; font-size:12px; color:var(--text-tertiary); flex-wrap:wrap;
+}
+.demo-row .link{
+  font-size:12px; color:var(--text-secondary); text-decoration:underline;
+  text-underline-offset:2px; text-decoration-color:var(--border-strong);
+  transition:color var(--t-fast) var(--ease), text-decoration-color var(--t-fast) var(--ease);
+}
+.demo-row .link:hover{color:var(--primary-600); text-decoration-color:var(--primary-400)}
+
+.feature-strip{
+  margin-top:24px; display:grid; grid-template-columns:repeat(3,1fr); gap:12px;
+}
+.feature-strip > div{
+  display:flex; align-items:flex-start; gap:10px; padding:14px;
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-lg);
+}
+.feature-strip svg{width:15px; height:15px; flex:none; margin-top:2px; color:var(--primary-500)}
+.feature-strip b{display:block; font-size:12px; font-weight:500; color:var(--text-primary)}
+.feature-strip span{display:block; font-size:11px; line-height:16px; color:var(--text-tertiary); margin-top:2px}
+
+/* ===========================================================================
+   9. 首页 · 文件卡
+   =========================================================================== */
+.filecard{
+  display:flex; align-items:center; gap:16px; padding:14px 16px;
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-xl); box-shadow:var(--sh-xs);
+}
+.thumb{
+  width:160px; height:90px; flex:none; border-radius:var(--r-md);
+  background:#EDF0F5; display:flex; align-items:center; justify-content:center;
+  color:#B4BCCC; overflow:hidden;
+}
+.thumb svg{width:28px; height:28px}
+.filecard .info{flex:1; min-width:0; display:flex; flex-direction:column; justify-content:center; gap:4px}
+.filecard .name-row{display:flex; align-items:center; gap:10px}
+.filecard .file-name{
+  font-size:16px; line-height:24px; font-weight:600;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.filecard .meta{font-size:12px; color:var(--text-secondary); font-family:var(--font-mono)}
+.filecard .meta-sub{font-size:12px; color:var(--text-tertiary)}
+.filecard .meta.is-muted{color:var(--text-tertiary)}
+
+/* ===========================================================================
+   10. 首页 · 格式卡片
+   =========================================================================== */
+.fmt-grid{display:grid; grid-template-columns:repeat(4,1fr); gap:12px}
+.fmt{
+  position:relative; height:88px; border-radius:var(--r-lg);
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  display:flex; flex-direction:column; align-items:center; justify-content:center; gap:3px;
+  transition:border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.fmt:hover{border-color:var(--primary-400); box-shadow:var(--sh-sm)}
+.fmt .fname{font-size:14px; font-weight:600; letter-spacing:.01em}
+.fmt .fdesc{font-size:11px; line-height:16px; color:var(--text-tertiary)}
+.fmt .tick{
+  position:absolute; top:6px; right:6px; width:16px; height:16px; border-radius:50%;
+  background:var(--primary-500); color:#fff; display:flex; align-items:center; justify-content:center;
+  opacity:0; transform:scale(.8);
+  transition:opacity var(--t-base) var(--ease), transform var(--t-base) var(--ease);
+}
+.fmt .tick svg{width:10px; height:10px}
+.fmt[aria-pressed="true"]{
+  background:var(--primary-50); border-color:var(--primary-500);
+  box-shadow:inset 0 0 0 1px var(--primary-500);
+}
+.fmt[aria-pressed="true"] .fdesc{color:var(--primary-600)}
+.fmt[aria-pressed="true"] .tick{opacity:1; transform:scale(1)}
+
+/* ===========================================================================
+   11. 判定结果条
+   =========================================================================== */
+.banner{
+  display:flex; align-items:center; gap:12px; min-height:56px;
+  padding:10px 16px 10px 14px; border-radius:var(--r-lg);
+  border:1px solid var(--border-default);
+  border-left-width:3px; border-left-style:solid;
+  transition:background var(--t-base) var(--ease), border-color var(--t-base) var(--ease);
+}
+.banner .b-ico{width:18px; height:18px; flex:none}
+.banner .b-body{min-width:0}
+.banner .b-title{font-size:14px; line-height:20px; font-weight:600}
+.banner .b-desc{font-size:12px; line-height:18px; color:var(--text-secondary); margin-top:1px}
+.banner .b-body{animation:fadeIn var(--t-base) var(--ease)}
+
+.banner.is-copy{background:var(--success-bg); border-color:var(--success-border); border-left-color:var(--success)}
+.banner.is-copy .b-ico,.banner.is-copy .b-title{color:var(--success)}
+.banner.is-remux{background:var(--warn-bg); border-color:var(--warn-border); border-left-color:var(--warn)}
+.banner.is-remux .b-ico,.banner.is-remux .b-title{color:var(--warn)}
+.banner.is-transcode{background:var(--accent-bg); border-color:var(--accent-border); border-left-color:var(--accent)}
+.banner.is-transcode .b-ico,.banner.is-transcode .b-title{color:var(--accent)}
+.banner.is-warn{background:var(--warn-bg); border-color:var(--warn-border); border-left-color:var(--warn)}
+.banner.is-warn .b-ico,.banner.is-warn .b-title{color:var(--warn)}
+
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+
+/* ===========================================================================
+   12. 输出位置 / 操作行
+   =========================================================================== */
+.output-row{
+  display:flex; align-items:center; gap:12px; margin-top:12px;
+  padding:10px 14px; background:var(--bg-surface);
+  border:1px solid var(--border-default); border-radius:var(--r-lg);
+}
+.output-row .lbl{font-size:12px; color:var(--text-tertiary); flex:none}
+.output-row .path{
+  flex:1; min-width:0; font-size:12px; color:var(--text-secondary); font-family:var(--font-mono);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+}
+.output-row .path bdi{unicode-bidi:plaintext}
+
+.action-row{display:flex; justify-content:flex-end; margin-top:14px}
+
+/* 转换中 / 完成 / 失败卡片与文件卡之间的间距 */
+.job-card,.result-card,.error-card{margin-top:12px}
+
+/* ===========================================================================
+   13. 转换中
+   =========================================================================== */
+.job-card{padding:20px 20px 18px}
+.job-head{display:flex; align-items:flex-start; gap:12px}
+.pulse-dot{
+  width:8px; height:8px; border-radius:50%; background:var(--primary-500);
+  margin-top:8px; flex:none; animation:pulse 1200ms ease-in-out infinite;
+}
+@keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+.job-title{font-size:15px; line-height:22px; font-weight:600}
+.job-sub{font-size:12px; color:var(--text-secondary); margin-top:2px}
+.job-sub .mono{color:var(--text-secondary)}
+
+.progress-wrap{display:flex; align-items:center; gap:14px; margin-top:20px}
+.progress{
+  flex:1; height:6px; border-radius:var(--r-sm); background:var(--bg-subtle); overflow:hidden;
+}
+.progress-fill{
+  height:100%; width:0%; border-radius:var(--r-sm); background:var(--primary-500);
+  transition:width 300ms linear;
+}
+.progress-pct{
+  font-size:20px; line-height:24px; font-weight:600; font-family:var(--font-mono);
+  font-variant-numeric:tabular-nums; min-width:56px; text-align:right;
+}
+
+/* 不定长进度条：直通/混合直通模式使用 */
+.indeterminate{
+  margin-top:20px; height:6px; border-radius:var(--r-sm);
+  background:var(--bg-subtle); overflow:hidden; position:relative;
+}
+.indeterminate i{
+  position:absolute; top:0; left:0; height:100%; width:34%; border-radius:var(--r-sm);
+  background:var(--primary-500); animation:indet 1200ms linear infinite;
+}
+@keyframes indet{from{transform:translateX(-100%)}to{transform:translateX(294%)}}
+
+.job-meta{
+  margin-top:12px; font-size:12px; color:var(--text-tertiary);
+  font-family:var(--font-mono); font-variant-numeric:tabular-nums;
+}
+.job-actions{display:flex; justify-content:flex-end; margin-top:18px}
+
+/* ===========================================================================
+   14. 完成 / 失败
+   =========================================================================== */
+.result-card{padding:24px; animation:riseIn var(--t-slow) var(--ease) both}
+@keyframes riseIn{from{opacity:0; transform:translateY(8px)}to{opacity:1; transform:none}}
+.result-top{display:flex; gap:16px}
+.ico-ok{
+  width:40px; height:40px; border-radius:50%; flex:none;
+  background:var(--success-bg); color:var(--success);
+  display:flex; align-items:center; justify-content:center;
+}
+.ico-ok svg{width:20px; height:20px}
+.result-body{min-width:0}
+.result-title{font-size:16px; line-height:24px; font-weight:600}
+.result-file{
+  margin-top:2px; font-size:13px; color:var(--text-secondary);
+  font-family:var(--font-mono); word-break:break-all;
+}
+.result-size{margin-top:14px; display:flex; align-items:baseline; gap:8px; flex-wrap:wrap}
+.result-size .num{font-size:20px; line-height:28px; font-weight:600; font-family:var(--font-mono); font-variant-numeric:tabular-nums}
+.result-size .arrow{color:var(--text-tertiary); font-size:14px}
+.result-size .delta{font-size:14px; font-weight:600; color:var(--success); font-family:var(--font-mono)}
+.result-size .delta.is-flat{color:var(--text-secondary); font-weight:500; font-family:var(--font-ui); font-size:13px}
+.result-meta{margin-top:6px; font-size:12px; color:var(--text-tertiary); font-family:var(--font-mono)}
+.result-actions{display:flex; justify-content:flex-end; gap:10px; margin-top:20px; padding-top:18px; border-top:1px solid var(--border-default)}
+
+.error-card{padding:24px; border-left:3px solid var(--danger)}
+.error-title{display:flex; align-items:center; gap:10px; font-size:16px; font-weight:600; color:var(--danger)}
+.error-title svg{width:20px; height:20px; flex:none}
+.error-card p{margin-top:12px; font-size:13px; line-height:22px; color:var(--text-secondary); max-width:560px}
+.error-actions{display:flex; gap:10px; margin-top:20px}
+
+/* ===========================================================================
+   15. 任务队列
+   =========================================================================== */
+.queue-row{
+  display:flex; align-items:center; gap:14px; padding:14px 16px;
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-xl); box-shadow:var(--sh-xs);
+}
+.queue-row .q-ico{
+  width:40px; height:40px; flex:none; border-radius:var(--r-md);
+  background:var(--bg-subtle); color:var(--text-secondary);
+  display:flex; align-items:center; justify-content:center; font-size:10px; font-weight:600;
+}
+.queue-row .q-body{flex:1; min-width:0}
+.queue-row .q-name{font-size:13px; font-weight:500; display:flex; align-items:center; gap:8px}
+.queue-row .q-name .arrow{color:var(--text-tertiary); font-weight:400}
+.queue-row .q-bar{height:5px; border-radius:3px; background:var(--bg-subtle); margin-top:8px; overflow:hidden}
+.queue-row .q-bar i{display:block; height:100%; background:var(--primary-500); border-radius:3px; transition:width 300ms linear}
+.queue-row .q-meta{margin-top:6px; font-size:11px; color:var(--text-tertiary); font-family:var(--font-mono)}
+.queue-row .q-right{display:flex; align-items:center; gap:12px; flex:none}
+.queue-row .q-pct{font-size:13px; font-weight:600; font-family:var(--font-mono)}
+
+.empty-block{
+  padding:44px 24px; text-align:center;
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-xl);
+}
+.empty-block .e-ico{
+  width:48px; height:48px; margin:0 auto 14px; border-radius:50%;
+  background:var(--bg-subtle); color:var(--text-tertiary);
+  display:flex; align-items:center; justify-content:center;
+}
+.empty-block .e-ico svg{width:22px; height:22px}
+.empty-block h3{font-size:16px; font-weight:600}
+.empty-block p{margin-top:6px; font-size:13px; color:var(--text-secondary)}
+.empty-block .btn{margin-top:18px}
+
+/* 【待后续迭代】整块禁用 */
+.locked{opacity:.55; pointer-events:none; user-select:none}
+.locked-wrap{position:relative}
+
+/* ===========================================================================
+   16. 参数预设
+   =========================================================================== */
+.preset-card{padding:16px 18px; margin-bottom:12px}
+.preset-head{display:flex; align-items:baseline; gap:10px; margin-bottom:14px}
+.preset-head .pname{font-size:16px; font-weight:600}
+.preset-head .pdesc{font-size:12px; color:var(--text-secondary)}
+.tier-row{display:grid; grid-template-columns:repeat(3,1fr); gap:12px}
+.tier{
+  position:relative; padding:11px 12px; border-radius:var(--r-lg);
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  text-align:left; display:flex; flex-direction:column; gap:2px;
+  transition:border-color var(--t-fast) var(--ease), background var(--t-fast) var(--ease),
+             box-shadow var(--t-fast) var(--ease);
+}
+.tier:hover{border-color:var(--primary-400); box-shadow:var(--sh-sm)}
+.tier .tname{font-size:13px; font-weight:600}
+.tier .tdesc{font-size:11px; line-height:16px; color:var(--text-tertiary)}
+.tier .tmult{font-size:11px; line-height:16px; color:var(--text-secondary); font-family:var(--font-mono)}
+.tier .tick{
+  position:absolute; top:8px; right:8px; width:15px; height:15px; border-radius:50%;
+  background:var(--primary-500); color:#fff; display:flex; align-items:center; justify-content:center;
+  opacity:0; transform:scale(.8); transition:opacity var(--t-base) var(--ease), transform var(--t-base) var(--ease);
+}
+.tier .tick svg{width:9px; height:9px}
+.tier[aria-pressed="true"]{
+  background:var(--primary-50); border-color:var(--primary-500);
+  box-shadow:inset 0 0 0 1px var(--primary-500);
+}
+.tier[aria-pressed="true"] .tick{opacity:1; transform:scale(1)}
+.tier[aria-pressed="true"] .tmult{color:var(--primary-600)}
+
+.advanced-card{
+  margin-top:20px; padding:18px; border-radius:var(--r-xl);
+  border:1px dashed var(--border-strong); background:var(--bg-surface);
+  display:flex; align-items:center; gap:14px;
+}
+.advanced-card .a-ico{
+  width:36px; height:36px; flex:none; border-radius:var(--r-md);
+  background:var(--bg-subtle); color:var(--text-tertiary);
+  display:flex; align-items:center; justify-content:center;
+}
+.advanced-card .a-ico svg{width:16px; height:16px}
+.advanced-card .a-body{flex:1}
+.advanced-card .a-title{font-size:13px; font-weight:500}
+.advanced-card .a-desc{font-size:12px; color:var(--text-tertiary); margin-top:2px}
+
+/* ===========================================================================
+   17. 设置
+   =========================================================================== */
+.setting-card{
+  background:var(--bg-surface); border:1px solid var(--border-default);
+  border-radius:var(--r-xl); box-shadow:var(--sh-xs); overflow:hidden;
+}
+.setting-row{
+  display:flex; align-items:center; gap:16px; min-height:56px; padding:8px 16px;
+}
+.setting-row + .setting-row{border-top:1px solid var(--border-default)}
+.setting-row .s-body{flex:1; min-width:0}
+.setting-row .s-name{font-size:13px; font-weight:500}
+.setting-row .s-desc{font-size:11px; line-height:16px; color:var(--text-tertiary); margin-top:1px}
+.setting-row .s-value{font-size:12px; color:var(--text-secondary); font-family:var(--font-mono); margin-top:2px}
+
+/* 分段控件 */
+.segmented{
+  display:inline-flex; padding:2px; background:var(--bg-subtle);
+  border-radius:var(--r-md); gap:2px;
+}
+.segmented button{
+  height:28px; padding:0 14px; border-radius:var(--r-sm); font-size:12px;
+  color:var(--text-secondary); display:inline-flex; align-items:center; gap:5px;
+  transition:background var(--t-fast) var(--ease), color var(--t-fast) var(--ease), box-shadow var(--t-fast) var(--ease);
+}
+.segmented button:hover:not(:disabled){color:var(--text-primary)}
+.segmented button[aria-pressed="true"]{
+  background:var(--bg-surface); color:var(--text-primary); font-weight:500; box-shadow:var(--sh-xs);
+}
+.segmented button:disabled{color:#B4BCCC; cursor:not-allowed}
+.segmented button:disabled .mini{font-size:10px; color:#C9D0DC}
+
+/* 开关 */
+.switch{
+  width:36px; height:20px; border-radius:10px; background:#D3D8E2; position:relative; flex:none;
+  transition:background var(--t-fast) var(--ease);
+}
+.switch i{
+  position:absolute; top:2px; left:2px; width:16px; height:16px; border-radius:50%;
+  background:#fff; box-shadow:0 1px 2px rgba(15,23,42,.2);
+  transition:transform var(--t-fast) var(--ease);
+}
+.switch[aria-checked="true"]{background:var(--primary-500)}
+.switch[aria-checked="true"] i{transform:translateX(16px)}
+
+/* 下拉 */
+.select{
+  height:32px; padding:0 28px 0 10px; border-radius:var(--r-md);
+  border:1px solid var(--border-strong); background:var(--bg-surface);
+  font-size:12px; color:var(--text-primary); appearance:none; cursor:pointer;
+  background-image:url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%235A6478' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+  background-repeat:no-repeat; background-position:right 9px center;
+  transition:border-color var(--t-fast) var(--ease);
+}
+.select:hover{border-color:var(--primary-400)}
+
+/* 界面密度：紧凑 */
+.win.density-compact .setting-row{min-height:46px; padding:5px 16px}
+.win.density-compact .preset-card{padding:12px 16px; margin-bottom:9px}
+.win.density-compact .queue-row{padding:10px 14px}
+.win.density-compact .content{padding:18px 32px 24px}
+.win.density-compact .fmt{height:76px}
+
+/* ===========================================================================
+   18. 关于
+   =========================================================================== */
+.about-wrap{max-width:480px; margin:8px auto 0; text-align:center; padding-bottom:24px}
+.about-ico{
+  width:64px; height:64px; margin:0 auto; border-radius:14px;
+  background:var(--primary-500); color:#fff; box-shadow:var(--sh-sm);
+  display:flex; align-items:center; justify-content:center;
+}
+.about-ico svg{width:30px; height:30px}
+.about-wrap h2{margin-top:16px; font-size:20px; line-height:28px; font-weight:600}
+.about-wrap .ver{margin-top:2px; font-size:12px; color:var(--text-tertiary); font-family:var(--font-mono)}
+.about-wrap .tagline{margin-top:14px; font-size:13px; line-height:22px; color:var(--text-secondary)}
+.about-wrap .btn{margin-top:20px}
+.about-sep{height:1px; background:var(--border-default); margin:28px 0 22px}
+.license-block{text-align:left}
+.license-block h4{font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px}
+.license-block p{font-size:12px; line-height:20px; color:var(--text-tertiary)}
+.license-actions{display:flex; gap:10px; margin-top:14px}
+.copyright{margin-top:28px; font-size:11px; color:var(--text-tertiary)}
+
+/* ===========================================================================
+   19. Toast
+   =========================================================================== */
+.toast-stack{
+  position:absolute; left:50%; bottom:24px; transform:translateX(-50%);
+  display:flex; flex-direction:column; align-items:center; gap:8px;
+  z-index:50; pointer-events:none;
+}
+.toast{
+  display:flex; align-items:center; gap:8px; max-width:420px; min-height:40px;
+  padding:9px 12px; border-radius:var(--r-lg); background:var(--bg-surface);
+  border:1px solid var(--border-default); box-shadow:var(--sh-md);
+  font-size:13px; color:var(--text-primary); pointer-events:auto;
+  animation:toastIn 200ms var(--ease) both;
+}
+.toast.is-out{animation:toastOut 180ms var(--ease) both}
+@keyframes toastIn{from{opacity:0; transform:translateY(16px)}to{opacity:1; transform:none}}
+@keyframes toastOut{from{opacity:1; transform:none}to{opacity:0; transform:translateY(8px)}}
+.toast svg{width:15px; height:15px; flex:none}
+.toast .t-close{
+  margin-left:4px; width:16px; height:16px; display:flex; align-items:center; justify-content:center;
+  color:var(--text-tertiary); opacity:0; transition:opacity var(--t-fast) var(--ease);
+}
+.toast:hover .t-close{opacity:1}
+.toast .t-close svg{width:11px; height:11px}
+.toast.is-success svg.t-ico{color:var(--success)}
+.toast.is-info svg.t-ico{color:var(--primary-500)}
+.toast.is-warning svg.t-ico{color:var(--warn)}
+.toast.is-error svg.t-ico{color:var(--danger)}
+
+/* ===========================================================================
+   20. 小尺寸适配（860 × 600）
+   =========================================================================== */
+.win.is-small .dropzone{height:252px}
+.win.is-small .dropzone .dz-title{font-size:18px}
+.win.is-small .content{padding:16px 24px 14px}
+.win.is-small .feature-strip{margin-top:16px; gap:10px}
+.win.is-small .feature-strip > div{padding:11px}
+.win.is-small .thumb{width:110px; height:62px}
+.win.is-small .filecard{padding:11px 14px; gap:14px}
+.win.is-small .fmt-grid{grid-template-columns:repeat(4,1fr); gap:10px}
+.win.is-small .fmt{height:70px}
+.win.is-small .banner{min-height:46px}
+.win.is-small .output-row{padding:8px 12px; margin-top:10px}
+.win.is-small .action-row{margin-top:12px}
+.win.is-small .section-label{margin:10px 0 7px}
+.win.is-small .page-head{margin-bottom:12px}
+
+/* ===========================================================================
+   21. 动效偏好降级
+   =========================================================================== */
+@media (prefers-reduced-motion: reduce){
+  *,*::before,*::after{
+    animation-duration:.01ms !important; animation-iteration-count:1 !important;
+    transition-duration:.01ms !important;
+  }
+  .indeterminate i{animation:none; width:100%; opacity:.45}
+  .pulse-dot{animation:none; opacity:1}
+}
+</style>
+</head>
+<body>
+
+<!-- =========================================================================
+     图标集
+     ========================================================================= -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <symbol id="i-convert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M4 8h13l-3-3"/><path d="M20 16H7l3 3"/>
+    </symbol>
+    <symbol id="i-queue" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="8" y1="7" x2="20" y2="7"/><line x1="8" y1="12" x2="20" y2="12"/><line x1="8" y1="17" x2="20" y2="17"/>
+      <circle cx="4" cy="7" r=".6" fill="currentColor"/><circle cx="4" cy="12" r=".6" fill="currentColor"/><circle cx="4" cy="17" r=".6" fill="currentColor"/>
+    </symbol>
+    <symbol id="i-preset" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="5" y1="21" x2="5" y2="14"/><line x1="5" y1="9" x2="5" y2="3"/>
+      <line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="7" x2="12" y2="3"/>
+      <line x1="19" y1="21" x2="19" y2="16"/><line x1="19" y1="11" x2="19" y2="3"/>
+      <line x1="2.5" y1="14" x2="7.5" y2="14"/><line x1="9.5" y1="7" x2="14.5" y2="7"/><line x1="16.5" y1="16" x2="21.5" y2="16"/>
+    </symbol>
+    <symbol id="i-settings" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="3"/>
+      <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.09A1.65 1.65 0 0 0 10.6 3V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+    </symbol>
+    <symbol id="i-info" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><line x1="12" y1="11" x2="12" y2="16"/><circle cx="12" cy="8" r=".7" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 16V4"/><path d="M7.5 8.5 12 4l4.5 4.5"/><path d="M4 15v3.5A1.5 1.5 0 0 0 5.5 20h13a1.5 1.5 0 0 0 1.5-1.5V15"/>
+    </symbol>
+    <symbol id="i-film" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="3" y="4" width="18" height="16" rx="2"/><line x1="7.5" y1="4" x2="7.5" y2="20"/><line x1="16.5" y1="4" x2="16.5" y2="20"/>
+      <line x1="3" y1="9" x2="7.5" y2="9"/><line x1="3" y1="15" x2="7.5" y2="15"/>
+      <line x1="16.5" y1="9" x2="21" y2="9"/><line x1="16.5" y1="15" x2="21" y2="15"/>
+    </symbol>
+    <symbol id="i-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="4 12.5 9.5 18 20 6.5"/>
+    </symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M10.3 3.9 1.9 18a2 2 0 0 0 1.7 3h16.8a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/>
+      <line x1="12" y1="9" x2="12" y2="13.5"/><circle cx="12" cy="17.2" r=".8" fill="currentColor" stroke="none"/>
+    </symbol>
+    <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">
+      <line x1="5" y1="5" x2="19" y2="19"/><line x1="19" y1="5" x2="5" y2="19"/>
+    </symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2.5h9A1.5 1.5 0 0 1 21 10v7.5a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>
+    </symbol>
+    <symbol id="i-clock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <circle cx="12" cy="12" r="9"/><polyline points="12 7 12 12 15.5 14"/>
+    </symbol>
+    <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="4.5" y="10.5" width="15" height="10" rx="2"/><path d="M8 10.5V7a4 4 0 0 1 8 0v3.5"/>
+    </symbol>
+    <symbol id="i-zap" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M13 2 4 14h7l-1 8 9-12h-7z"/>
+    </symbol>
+    <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M12 2.5 4.5 5.5v6c0 4.6 3.2 8.4 7.5 10 4.3-1.6 7.5-5.4 7.5-10v-6z"/>
+    </symbol>
+    <symbol id="i-badge-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="m12 2.5 2.4 1.8 3-.2.9 2.9 2.4 1.8-1 2.8 1 2.8-2.4 1.8-.9 2.9-3-.2L12 21.5l-2.4-1.8-3 .2-.9-2.9L3.3 15l1-2.8-1-2.8L5.7 7l.9-2.9 3 .2z"/>
+      <polyline points="8.8 12 11 14.2 15.4 9.8"/>
+    </symbol>
+    <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="4" y1="12" x2="20" y2="12"/></symbol>
+    <symbol id="i-square" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="5" y="5" width="14" height="14" rx="1"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <rect x="9" y="9" width="11" height="11" rx="2"/><path d="M15 5.5A1.5 1.5 0 0 0 13.5 4h-8A1.5 1.5 0 0 0 4 5.5v8A1.5 1.5 0 0 0 5.5 15"/>
+    </symbol>
+    <symbol id="i-external" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M14 4h6v6"/><path d="M20 4l-8 8"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/>
+    </symbol>
+    <symbol id="i-refresh" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M20 11a8 8 0 1 0-2.3 5.7"/><polyline points="20 4 20 11 13 11"/>
+    </symbol>
+    <symbol id="i-arrow-right" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+      <line x1="4" y1="12" x2="19" y2="12"/><polyline points="13.5 6.5 19 12 13.5 17.5"/>
+    </symbol>
+  </defs>
+</svg>
+
+<div class="stage">
+  <!-- 原型预览工具条（非产品 UI） -->
+  <div class="stage-bar">
+    <span class="label">原型预览尺寸</span>
+    <button data-size="1080x720" aria-pressed="true">1080 × 720</button>
+    <button data-size="860x600" aria-pressed="false">860 × 600（最小）</button>
+  </div>
+
+  <div class="stage-inner" id="stageInner">
+    <div class="win" id="win" style="width:1080px;height:720px;transform:scale(1)">
+
+      <!-- 标题栏 -->
+      <div class="titlebar">
+        <div class="app-ico"><svg><use href="#i-convert"/></svg></div>
+        <span class="app-name">视频转换器</span>
+        <div class="spacer"></div>
+        <div class="win-ctrl">
+          <button type="button" title="最小化" onclick="protoToast('原型演示：最小化窗口','info')"><svg><use href="#i-minus"/></svg></button>
+          <button type="button" title="最大化" onclick="protoToast('原型演示：最大化窗口','info')"><svg><use href="#i-square"/></svg></button>
+          <button type="button" class="close" title="关闭" onclick="protoToast('原型演示：关闭窗口','info')"><svg><use href="#i-x"/></svg></button>
+        </div>
+      </div>
+
+      <div class="win-body">
+
+        <!-- 侧边栏 -->
+        <nav class="sidebar" aria-label="主导航">
+          <button class="nav-item" data-page="convert" aria-current="page">
+            <i class="ind"></i>
+            <svg class="nav-ico"><use href="#i-convert"/></svg>
+            <span class="grow">转换</span>
+          </button>
+
+          <div class="nav-group">工作区</div>
+          <button class="nav-item" data-page="queue">
+            <i class="ind"></i>
+            <svg class="nav-ico"><use href="#i-queue"/></svg>
+            <span class="grow">任务队列</span>
+            <em class="badge-iter">迭代</em>
+          </button>
+
+          <div class="nav-group">配置</div>
+          <button class="nav-item" data-page="presets">
+            <i class="ind"></i>
+            <svg class="nav-ico"><use href="#i-preset"/></svg>
+            <span class="grow">参数预设</span>
+          </button>
+          <button class="nav-item" data-page="settings">
+            <i class="ind"></i>
+            <svg class="nav-ico"><use href="#i-settings"/></svg>
+            <span class="grow">设置</span>
+          </button>
+
+          <div class="nav-divider"></div>
+          <button class="nav-item" data-page="about">
+            <i class="ind"></i>
+            <svg class="nav-ico"><use href="#i-info"/></svg>
+            <span class="grow">关于</span>
+          </button>
+
+          <div class="nav-foot mono">v0.1.0</div>
+        </nav>
+
+        <!-- 内容区 -->
+        <main class="content" id="content">
+
+          <!-- ============================================================
+               页面一 · 转换
+               ============================================================ -->
+          <section class="page" id="page-convert" aria-label="转换">
+            <header class="page-head">
+              <h1>转换</h1>
+              <p>拖入视频文件，选择一个目标格式，我们负责让它一定能用。</p>
+            </header>
+
+            <!-- 空态 -->
+            <div id="homeEmpty">
+              <div class="dropzone" id="dropzone">
+                <div class="dz-icon"><svg><use href="#i-upload"/></svg></div>
+                <div class="dz-title">把视频拖到这里</div>
+                <div class="dz-sub">支持 MP4、MKV、AVI、MOV、FLV 等常见格式 · 一次一个文件</div>
+                <button class="btn btn-secondary" id="btnPick" type="button">选择文件…</button>
+                <input type="file" id="fileInput" accept="video/*,.mkv,.avi,.flv,.wmv,.mpg,.mpeg,.ts,.rmvb" hidden>
+              </div>
+
+              <div class="demo-row">
+                <span>没有现成文件？试试示例：</span>
+                <button class="link" type="button" data-demo="travel">旅行记录.mkv</button>
+                <span>·</span>
+                <button class="link" type="button" data-demo="meeting">会议录屏.mp4</button>
+                <span>·</span>
+                <button class="link" type="button" data-demo="broken">损坏片段.mp4</button>
+              </div>
+
+              <div class="feature-strip">
+                <div>
+                  <svg><use href="#i-zap"/></svg>
+                  <div><b>能直通就直通</b><span>不重新压缩，几秒完成</span></div>
+                </div>
+                <div>
+                  <svg><use href="#i-shield"/></svg>
+                  <div><b>文件不出本机</b><span>全程离线处理</span></div>
+                </div>
+                <div>
+                  <svg><use href="#i-badge-check"/></svg>
+                  <div><b>转完自动校验</b><span>告诉你结果能不能用</span></div>
+                </div>
+              </div>
+            </div>
+
+            <!-- 已载入 -->
+            <div id="homeWork" hidden>
+              <div class="filecard">
+                <div class="thumb"><svg><use href="#i-film"/></svg></div>
+                <div class="info">
+                  <div class="name-row">
+                    <div class="file-name" id="fName">—</div>
+                    <button class="btn-text" id="btnReplace" type="button">更换</button>
+                  </div>
+                  <div class="meta" id="fMeta">—</div>
+                  <div class="meta-sub" id="fAudio">—</div>
+                </div>
+              </div>
+
+              <!-- 状态 A · 待转换 -->
+              <div id="stageSetup">
+                <div class="section-label">输出格式</div>
+                <div class="fmt-grid" id="fmtGrid" role="group" aria-label="输出格式"></div>
+
+                <div class="section-label">转换方式</div>
+                <div class="banner is-copy" id="banner">
+                  <svg class="b-ico"><use href="#i-zap"/></svg>
+                  <div class="b-body">
+                    <div class="b-title" id="bTitle">无损直通 · 无需重新压缩</div>
+                    <div class="b-desc" id="bDesc">预计 3 秒完成，画质 100% 保留</div>
+                  </div>
+                </div>
+
+                <div class="output-row">
+                  <span class="lbl">输出位置</span>
+                  <span class="path mono" id="outPath">C:\Users\Public\Videos\—</span>
+                  <button class="btn-text" id="btnChangePath" type="button">更改</button>
+                </div>
+
+                <div class="action-row">
+                  <button class="btn btn-primary btn-lg" id="btnStart" type="button">开始转换</button>
+                </div>
+              </div>
+
+              <!-- 状态 B · 转换中 -->
+              <div id="stageRunning" hidden>
+                <div class="card job-card">
+                  <div class="job-head">
+                    <div class="pulse-dot"></div>
+                    <div>
+                      <div class="job-title" id="runTitle">正在转换…</div>
+                      <div class="job-sub" id="runSub">—</div>
+                    </div>
+                  </div>
+
+                  <div class="progress-wrap" id="progWrap">
+                    <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" id="progBar">
+                      <div class="progress-fill" id="progFill"></div>
+                    </div>
+                    <div class="progress-pct" id="progPct">0%</div>
+                  </div>
+
+                  <div class="indeterminate" id="indet" hidden><i></i></div>
+
+                  <div class="job-meta" id="runMeta">已用 00:00 · 剩余约 00:00</div>
+
+                  <div class="job-actions">
+                    <button class="btn btn-secondary" id="btnCancel" type="button">取消</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 状态 C · 完成 -->
+              <div id="stageDone" hidden>
+                <div class="card result-card">
+                  <div class="result-top">
+                    <div class="ico-ok"><svg><use href="#i-check"/></svg></div>
+                    <div class="result-body">
+                      <div class="result-title">转换完成</div>
+                      <div class="result-file" id="doneFile">—</div>
+                      <div class="result-size">
+                        <span class="num" id="doneFrom">—</span>
+                        <span class="arrow">→</span>
+                        <span class="num" id="doneTo">—</span>
+                        <span class="delta" id="doneDelta">—</span>
+                      </div>
+                      <div class="result-meta" id="doneMeta">—</div>
+                    </div>
+                  </div>
+                  <div class="result-actions">
+                    <button class="btn btn-secondary" id="btnOpenFolder" type="button">
+                      <svg><use href="#i-folder"/></svg>打开所在文件夹
+                    </button>
+                    <button class="btn btn-primary" id="btnAgain" type="button">再转一个</button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- 状态 D · 失败 -->
+              <div id="stageError" hidden>
+                <div class="card error-card">
+                  <div class="error-title">
+                    <svg><use href="#i-alert"/></svg><span>转换失败</span>
+                  </div>
+                  <p id="errMsg">这个文件没有正常结束，通常是下载或拷贝过程中断了。请重新获取原始文件后再试。</p>
+                  <div class="error-actions">
+                    <button class="btn btn-secondary" id="btnCopyDiag" type="button">
+                      <svg><use href="#i-copy"/></svg>复制诊断信息
+                    </button>
+                    <button class="btn btn-secondary" id="btnTryOther" type="button">换个格式试试</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================================================
+               页面二 · 任务队列
+               ============================================================ -->
+          <section class="page" id="page-queue" hidden aria-label="任务队列">
+            <header class="page-head">
+              <h1>任务队列</h1>
+              <p>当前任务的进度与最近记录。</p>
+            </header>
+
+            <div class="notice">
+              <svg><use href="#i-info"/></svg>
+              <div>当前版本一次只处理一个文件。批量转换与历史记录属于后续迭代能力，本页仅展示进行中的任务。</div>
+            </div>
+
+            <div class="section-label">进行中</div>
+            <div id="queueCurrent"></div>
+
+            <div class="section-head">
+              <div class="section-label">最近记录</div>
+              <span class="badge-iter">待后续迭代</span>
+            </div>
+            <div class="locked">
+              <div class="empty-block">
+                <div class="e-ico"><svg><use href="#i-clock"/></svg></div>
+                <h3>历史记录功能正在开发中</h3>
+                <p>后续版本会保存你的转换记录，方便随时找回</p>
+                <button class="btn btn-secondary" type="button" onclick="go('convert')">返回转换页</button>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================================================
+               页面三 · 参数预设
+               ============================================================ -->
+          <section class="page" id="page-presets" hidden aria-label="参数预设">
+            <header class="page-head">
+              <h1>参数预设</h1>
+              <p>为每种格式设定默认的质量与体积倾向，这些设置会自动应用到转换页。</p>
+            </header>
+
+            <div id="presetList"></div>
+
+            <div class="advanced-card locked">
+              <div class="a-ico"><svg><use href="#i-lock"/></svg></div>
+              <div class="a-body">
+                <div class="a-title">精细调节</div>
+                <div class="a-desc">画质数值、编码方式、文件体积上限等手动设置，将在后续版本开放</div>
+              </div>
+              <span class="badge-iter">待后续迭代</span>
+            </div>
+          </section>
+
+          <!-- ============================================================
+               页面四 · 设置
+               ============================================================ -->
+          <section class="page" id="page-settings" hidden aria-label="设置">
+            <header class="page-head">
+              <h1>设置</h1>
+              <p>调整默认行为与界面偏好。</p>
+            </header>
+
+            <div class="section-label">常规</div>
+            <div class="setting-card">
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">默认保存位置</div>
+                  <div class="s-value" id="setSavePath">C:\Users\Public\Videos</div>
+                </div>
+                <button class="btn-text" type="button" onclick="protoToast('原型演示：此处会打开系统文件夹选择框','info')">更改</button>
+              </div>
+
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">默认输出格式</div>
+                  <div class="s-desc">打开转换页时默认选中的格式</div>
+                </div>
+                <select class="select" id="setDefaultFmt">
+                  <option value="mp4">MP4 · 通用兼容</option>
+                  <option value="mkv">MKV · 无损封装</option>
+                  <option value="mov">MOV · 苹果生态</option>
+                  <option value="avi">AVI · 老设备</option>
+                </select>
+              </div>
+
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">转换完成后打开所在文件夹</div>
+                </div>
+                <button class="switch" id="setOpenFolder" role="switch" aria-checked="true" aria-label="转换完成后打开所在文件夹"><i></i></button>
+              </div>
+            </div>
+
+            <div class="section-label">外观</div>
+            <div class="setting-card">
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">主题</div>
+                  <div class="s-desc">深色模式将在后续版本提供</div>
+                </div>
+                <div class="segmented" role="group" aria-label="主题">
+                  <button type="button" aria-pressed="true" onclick="protoToast('当前为浅色主题','info')">浅色</button>
+                  <button type="button" disabled aria-pressed="false">深色</button>
+                  <button type="button" disabled aria-pressed="false">跟随系统</button>
+                </div>
+              </div>
+
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">界面密度</div>
+                </div>
+                <div class="segmented" role="group" aria-label="界面密度" id="segDensity">
+                  <button type="button" data-density="normal" aria-pressed="true">标准</button>
+                  <button type="button" data-density="compact" aria-pressed="false">紧凑</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="section-head">
+              <div class="section-label">性能</div>
+              <span class="badge-iter">待后续迭代</span>
+            </div>
+            <div class="setting-card locked">
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">硬件加速编码</div>
+                  <div class="s-desc">使用显卡加速，转换速度更快 · 后续版本开放</div>
+                </div>
+                <svg style="width:15px;height:15px;color:var(--text-tertiary)"><use href="#i-lock"/></svg>
+              </div>
+              <div class="setting-row">
+                <div class="s-body">
+                  <div class="s-name">同时转换任务数</div>
+                  <div class="s-desc">当前版本仅支持单文件转换</div>
+                </div>
+                <span class="mono" style="font-size:12px;color:var(--text-secondary)">1</span>
+              </div>
+            </div>
+
+            <div class="section-label">关于转换引擎</div>
+            <div class="setting-card">
+              <div class="setting-row">
+                <div class="s-body"><div class="s-name">版本</div></div>
+                <span class="mono" style="font-size:12px;color:var(--text-secondary)">8.1.3（内置）</span>
+              </div>
+              <div class="setting-row">
+                <div class="s-body"><div class="s-name">许可</div></div>
+                <div style="display:flex;align-items:center;gap:8px">
+                  <span class="mono" style="font-size:12px;color:var(--text-secondary)">GPL v3</span>
+                  <button class="btn-text" type="button" onclick="protoToast('原型演示：将在浏览器中打开源码地址','info')">查看源码</button>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- ============================================================
+               页面五 · 关于
+               ============================================================ -->
+          <section class="page" id="page-about" hidden aria-label="关于">
+            <header class="page-head">
+              <h1>关于</h1>
+            </header>
+
+            <div class="about-wrap">
+              <div class="about-ico"><svg><use href="#i-convert"/></svg></div>
+              <h2>视频转换器</h2>
+              <div class="ver">v0.1.0</div>
+              <p class="tagline">拖入视频，选一个格式，我们负责让它一定能用——<br>并且告诉你为什么之前不行。</p>
+              <button class="btn btn-secondary" type="button" onclick="protoToast('已是最新版本 v0.1.0','success')">
+                <svg><use href="#i-refresh"/></svg>检查更新
+              </button>
+
+              <div class="about-sep"></div>
+
+              <div class="license-block">
+                <h4>开源许可</h4>
+                <p>本产品使用 FFmpeg（GPL v3）作为转换引擎，相关源码可在 ffmpeg.org 获取。本产品本身不修改 FFmpeg 源码。</p>
+                <div class="license-actions">
+                  <button class="btn btn-secondary" type="button" onclick="protoToast('原型演示：将展示完整许可文本','info')">查看许可详情</button>
+                  <button class="btn btn-secondary" type="button" onclick="protoToast('原型演示：将打开问题反馈页面','info')">
+                    <svg><use href="#i-external"/></svg>问题反馈
+                  </button>
+                </div>
+              </div>
+
+              <div class="copyright">© 2026 · 保留所有权利</div>
+            </div>
+          </section>
+
+        </main>
+      </div>
+
+      <!-- Toast -->
+      <div class="toast-stack" id="toastStack" role="status" aria-live="polite"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ===========================================================================
+   0. 工具
+   =========================================================================== */
+const $  = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => Array.from(r.querySelectorAll(s));
+
+/* ===========================================================================
+   1. 静态数据
+   =========================================================================== */
+
+// 8 个目标格式（顺序与规范 §5.1 一致）
+const FORMATS = [
+  { key:'mp4',  name:'MP4',  desc:'通用兼容', ext:'mp4' },
+  { key:'mkv',  name:'MKV',  desc:'无损封装', ext:'mkv' },
+  { key:'avi',  name:'AVI',  desc:'老设备',   ext:'avi' },
+  { key:'mov',  name:'MOV',  desc:'苹果生态', ext:'mov' },
+  { key:'flv',  name:'FLV',  desc:'网页旧版', ext:'flv' },
+  { key:'wmv',  name:'WMV',  desc:'Windows',  ext:'wmv' },
+  { key:'webm', name:'WebM', desc:'网页压缩', ext:'webm' },
+  { key:'mpeg', name:'MPEG', desc:'老旧播放', ext:'mpg'  },
+];
+
+const PRESET_DESC = {
+  mp4:'通用兼容 · 几乎所有设备都能播放',
+  mkv:'无损封装 · 适合保留多音轨与字幕',
+  avi:'老设备 · 老旧播放器与车载屏幕',
+  mov:'苹果生态 · 苹果设备与剪辑软件',
+  flv:'网页旧版 · 老式网页与直播回放',
+  wmv:'Windows · Windows 老版本播放器',
+  webm:'网页压缩 · 网页嵌入，体积小',
+  mpeg:'老旧播放 · 老式 DVD 与电视',
+};
+
+// 体积倍率（相对原始大小），每档 formats 略有差异，避免看起来是同一套数字
+const PRESET_MULT = {
+  high:     { name:'高清优先', desc:'画质最好',   key:'high' },
+  standard: { name:'标准',     desc:'画质与体积平衡', key:'standard' },
+  small:    { name:'体积优先', desc:'文件最小',   key:'small' },
+};
+const MULT_TABLE = {
+  mp4:  { high:'1.2×', standard:'0.7×', small:'0.4×' },
+  mkv:  { high:'1.0×', standard:'0.8×', small:'0.55×' },
+  avi:  { high:'1.1×', standard:'0.65×', small:'0.35×' },
+  mov:  { high:'1.15×', standard:'0.7×', small:'0.4×' },
+  flv:  { high:'1.0×', standard:'0.6×', small:'0.35×' },
+  wmv:  { high:'1.0×', standard:'0.6×', small:'0.35×' },
+  webm: { high:'0.9×', standard:'0.5×', small:'0.3×' },
+  mpeg: { high:'1.2×', standard:'0.8×', small:'0.5×' },
+};
+
+/* --- 3 组内置示例 ---------------------------------------------------------
+   video / audioCodec 是内部判定用的字段，界面上永远不会出现这两个词。
+   ------------------------------------------------------------------------- */
+const PROFILES = {
+  travel: {
+    id:'travel', name:'旅行记录.mkv',
+    sizeMB:850, durationSec:754, w:1920, h:1080, fps:30,
+    audio:'立体声 · 48kHz', video:'h264', audioCodec:'aac', broken:false,
+  },
+  meeting: {
+    id:'meeting', name:'会议录屏.mp4',
+    sizeMB:42.6, durationSec:192, w:1280, h:720, fps:30,
+    audio:'立体声 · 48kHz', video:'h264', audioCodec:'ac3', broken:false,
+  },
+  broken: {
+    id:'broken', name:'损坏片段.mp4',
+    sizeMB:1228, durationSec:null, w:null, h:null, fps:null,
+    audio:'无法读取', video:null, audioCodec:null, broken:true,
+  },
+};
+
+/* ===========================================================================
+   2. 兼容判定（纯逻辑，与 UI 解耦）
+   =========================================================================== */
+
+// 目标格式能否直接装下这种视频编码（不重新压缩画面）
+function canCopyVideo(target, vcodec){
+  if(!vcodec) return false;
+  if(target === 'mkv') return true;                       // MKV 什么都能装
+  if(target === 'mp4' || target === 'mov') return ['h264','hevc'].includes(vcodec);
+  if(target === 'flv') return vcodec === 'h264';
+  return false;                                           // avi/wmv/webm/mpeg 一律重编码
+}
+
+// 目标格式能否直接装下这种音频编码
+function canCopyAudio(target, acodec){
+  if(!acodec) return false;
+  if(target === 'mkv') return true;
+  if(target === 'mp4' || target === 'mov' || target === 'flv') return ['aac','mp3'].includes(acodec);
+  return false;
+}
+
+/* 三种模式 */
+// copy      无损直通：画面声音都不动
+// remux     混合直通：画面不动，音频要转
+// transcode 重新压缩：画面声音都要重做
+function computeMode(profile, target){
+  if(!profile) return 'none';
+  if(profile.broken) return 'unknown';
+  const v = canCopyVideo(target, profile.video);
+  const a = canCopyAudio(target, profile.audioCodec);
+  if(v && a) return 'copy';
+  if(v && !a) return 'remux';
+  return 'transcode';
+}
+
+/* 预计耗时（秒）
+   ⚠️ 原型压缩：真实转码远慢于此，这里把演示时长压到十几秒内，
+      让评审可以完整走完「判定 → 转换 → 完成」的链路。 */
+function estimateSec(profile, mode){
+  if(profile.broken) return 8;
+  if(mode === 'copy')  return 3;
+  if(mode === 'remux') return Math.max(6, Math.round((profile.durationSec || 60) * 0.012));
+  return Math.max(9, Math.round((profile.durationSec || 60) * 0.020));
+}
+
+/* 输出体积倍率（相对原始大小）
+   注：无损直通的体积变化很小，这里不再像草图那样写「减少 28%」，
+       那会误导用户以为直通能大幅压缩。 */
+const SIZE_RATIO = { copy:0.99, remux:0.82, transcode:0.55 };
+
+/* ===========================================================================
+   3. 全局状态
+   =========================================================================== */
+const state = {
+  page:'convert',
+  stage:'empty',        // empty | setup | running | done | error
+  profile:null,
+  target:'mp4',
+  presets:{},           // { mp4:'standard', ... }
+  job:null,             // { mode, total, t0, timer }
+  openFolder:true,
+  density:'normal',
+  size:'1080x720',
+};
+
+FORMATS.forEach(f => state.presets[f.key] = 'standard');
+
+/* ===========================================================================
+   4. 格式化
+   =========================================================================== */
+function fmtSize(mb){
+  if(mb == null) return '—';
+  if(mb >= 1024) return (mb / 1024).toFixed(2).replace(/\.?0+$/, '') + ' GB';
+  if(mb >= 10)   return Math.round(mb) + ' MB';
+  return mb.toFixed(1) + ' MB';
+}
+function fmtDur(sec){
+  if(sec == null) return '--:--';
+  sec = Math.round(sec);
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  const p = n => String(n).padStart(2, '0');
+  return h ? `${h}:${p(m)}:${p(s)}` : `${p(m)}:${p(s)}`;
+}
+function baseName(name){ return name.replace(/\.[^.]+$/, ''); }
+
+/* ===========================================================================
+   5. Toast
+   =========================================================================== */
+const TOAST_ICON = { success:'#i-check', info:'#i-info', warning:'#i-alert', error:'#i-alert' };
+function toast(msg, type = 'success', ms){
+  const stack = $('#toastStack');
+  // 最多 3 条
+  while(stack.children.length >= 3) stack.firstElementChild.remove();
+
+  const el = document.createElement('div');
+  el.className = `toast is-${type}`;
+  el.innerHTML = `<svg class="t-ico"><use href="${TOAST_ICON[type]}"/></svg>
+                  <span class="t-msg"></span>
+                  <button class="t-close" type="button" aria-label="关闭"><svg><use href="#i-x"/></svg></button>`;
+  el.querySelector('.t-msg').textContent = msg;
+  stack.appendChild(el);
+
+  const life = ms || (type === 'success' || type === 'info' ? 2200 : 4000);
+  const kill = () => {
+    if(el.classList.contains('is-out')) return;
+    el.classList.add('is-out');
+    setTimeout(() => el.remove(), 200);
+  };
+  const t = setTimeout(kill, life);
+  el.querySelector('.t-close').addEventListener('click', () => { clearTimeout(t); kill(); });
+  return el;
+}
+window.protoToast = toast;
+
+/* ===========================================================================
+   6. 页面切换
+   =========================================================================== */
+function go(page){
+  if(state.page === page) return;
+  const content = $('#content');
+  content.classList.add('is-switching');
+  setTimeout(() => {
+    state.page = page;
+    $$('.page').forEach(p => { p.hidden = (p.id !== 'page-' + page); });
+    $$('.nav-item').forEach(n => {
+      if(n.dataset.page === page) n.setAttribute('aria-current','page');
+      else n.removeAttribute('aria-current');
+    });
+    content.scrollTop = 0;
+    content.classList.remove('is-switching');
+  }, 150);
+}
+window.go = go;
+
+$$('.nav-item').forEach(btn => {
+  btn.addEventListener('click', () => {
+    // 转换中离开页面：给出提示，任务继续在后台跑（原型里任务不中断）
+    if(state.stage === 'running' && state.page === 'convert' && btn.dataset.page !== 'convert'){
+      toast('转换正在后台进行，可回到转换页查看进度', 'info');
+    }
+    go(btn.dataset.page);
+  });
+});
+
+/* ===========================================================================
+   7. 首页 · 渲染
+   =========================================================================== */
+function renderAll(){
+  const empty = state.stage === 'empty';
+  $('#homeEmpty').hidden = !empty;
+  $('#homeWork').hidden  = empty;
+
+  $('#stageSetup').hidden   = state.stage !== 'setup';
+  $('#stageRunning').hidden = state.stage !== 'running';
+  $('#stageDone').hidden    = state.stage !== 'done';
+  $('#stageError').hidden   = state.stage !== 'error';
+
+  if(!empty) renderFileCard();
+  if(state.stage === 'setup'){
+    renderFormats();
+    renderBanner();
+    renderOutput();
+  }
+  renderQueue();
+}
+
+function renderFileCard(){
+  const p = state.profile;
+  if(!p) return;
+  $('#fName').textContent = p.name;
+  if(p.broken){
+    $('#fMeta').textContent = `${fmtSize(p.sizeMB)} · 时长无法读取 · 分辨率无法读取`;
+    $('#fMeta').classList.add('is-muted');
+    $('#fAudio').textContent = '音轨信息无法读取，文件可能不完整';
+  }else{
+    $('#fMeta').textContent = `${fmtSize(p.sizeMB)} · ${fmtDur(p.durationSec)} · ${p.w}×${p.h} · ${p.fps}fps`;
+    $('#fMeta').classList.remove('is-muted');
+    $('#fAudio').textContent = `音频：${p.audio}`;
+  }
+}
+
+function renderFormats(){
+  const grid = $('#fmtGrid');
+  grid.innerHTML = FORMATS.map(f => `
+    <button class="fmt" type="button" role="button"
+            data-fmt="${f.key}" aria-pressed="${state.target === f.key}">
+      <span class="fname">${f.name}</span>
+      <span class="fdesc">${f.desc}</span>
+      <span class="tick"><svg><use href="#i-check"/></svg></span>
+    </button>`).join('');
+
+  $$('.fmt', grid).forEach(btn => {
+    btn.addEventListener('click', () => {
+      if(state.target === btn.dataset.fmt) return;
+      state.target = btn.dataset.fmt;
+      $$('.fmt', grid).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.fmt === state.target)));
+      renderBanner();
+      renderOutput();
+    });
+  });
+}
+
+const MODE_META = {
+  copy: {
+    cls:'is-copy', icon:'#i-zap',
+    title:'无损直通 · 无需重新压缩',
+    desc: (p, t) => `画面和声音都不动，只换个封装。预计 ${t} 秒完成，画质 100% 保留`,
+  },
+  remux: {
+    cls:'is-remux', icon:'#i-zap',
+    title:'混合直通 · 画面不动，音频需要转换',
+    desc: (p, t) => `画面不重新压缩，只转换音频轨。预计 ${t} 秒完成，画质 100% 保留`,
+  },
+  transcode: {
+    cls:'is-transcode', icon:'#i-clock',
+    title:'需要重新压缩 · 耗时更长',
+    desc: (p, t) => `当前文件与目标格式不兼容，需要完整转换。预计 ${t} 秒左右完成`,
+  },
+  unknown: {
+    cls:'is-warn', icon:'#i-alert',
+    title:'文件信息读取不完整',
+    desc: () => '仍可尝试转换，但可能会失败。建议先确认文件能正常播放',
+  },
+};
+
+function renderBanner(){
+  const p = state.profile;
+  const mode = computeMode(p, state.target);
+  const meta = MODE_META[mode] || MODE_META.unknown;
+  const t = estimateSec(p, mode);
+
+  const el = $('#banner');
+  el.className = 'banner ' + meta.cls;
+  el.querySelector('.b-ico use').setAttribute('href', meta.icon);
+  $('#bTitle').textContent = meta.title;
+  $('#bDesc').textContent  = meta.desc(p, t);
+}
+
+function renderOutput(){
+  const p = state.profile;
+  if(!p) return;
+  const f = FORMATS.find(x => x.key === state.target);
+  const out = `${baseName(p.name)}_converted.${f.ext}`;
+  const path = `C:\\Users\\Public\\Videos\\${out}`;
+  const el = $('#outPath');
+  el.textContent = path;
+  el.title = path;
+  state.outName = out;
+  state.outPath = path;
+}
+
+/* ===========================================================================
+   8. 导入文件
+   =========================================================================== */
+function loadProfile(p){
+  state.profile = p;
+  state.target = 'mp4';
+  state.stage = 'setup';
+  renderAll();
+  toast(`已载入 ${p.name}`, 'success');
+}
+
+// 真实拖入的文件：只能拿到文件名与大小，按扩展名推断一份合理的元数据
+function profileFromFile(file){
+  const ext = (file.name.split('.').pop() || '').toLowerCase();
+  const sizeMB = file.size / 1024 / 1024;
+  // 粗略按 1.2 MB/s 估算时长，仅用于让界面数字看起来合理
+  const durationSec = Math.max(5, Math.round(sizeMB / 1.2));
+  const isMkv = ext === 'mkv';
+  return {
+    id:'local', name:file.name, sizeMB, durationSec,
+    w:1920, h:1080, fps:30,
+    audio:'立体声 · 48kHz',
+    video:'h264',
+    audioCodec: isMkv ? 'aac' : 'ac3',
+    broken:false,
+  };
+}
+
+/* 拖拽：整个内容区都是热区 */
+const winEl = $('#win');
+let dragDepth = 0;
+function isConvertPage(){ return state.page === 'convert'; }
+
+['dragenter','dragover'].forEach(type => {
+  document.addEventListener(type, e => {
+    if(!isConvertPage()) return;
+    e.preventDefault();
+    if(type === 'dragenter') dragDepth++;
+    if(state.stage === 'empty') winEl.classList.add('is-dragover');
+  });
+});
+['dragleave','dragend'].forEach(type => {
+  document.addEventListener(type, e => {
+    if(type === 'dragleave') dragDepth = Math.max(0, dragDepth - 1);
+    if(dragDepth === 0) winEl.classList.remove('is-dragover');
+  });
+});
+document.addEventListener('drop', e => {
+  if(!isConvertPage()) return;
+  e.preventDefault();
+  dragDepth = 0;
+  winEl.classList.remove('is-dragover');
+
+  const file = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+  if(state.stage !== 'empty'){
+    toast('当前已有一个文件，请先更换或完成转换', 'warning');
+    return;
+  }
+  if(!file){
+    // 某些环境下拖入非文件对象拿不到 File，回退到示例
+    loadProfile(PROFILES.travel);
+    return;
+  }
+  loadProfile(profileFromFile(file));
+});
+
+/* ===========================================================================
+   9. 转换流程
+   =========================================================================== */
+function startJob(){
+  if(state.stage !== 'setup' || !state.profile) return;
+
+  const p = state.profile;
+  const mode = computeMode(p, state.target);
+  const total = estimateSec(p, mode);
+  const f = FORMATS.find(x => x.key === state.target);
+
+  state.stage = 'running';
+  state.job = { mode, total, t0: performance.now(), timer:null };
+  renderAll();
+
+  // 文案
+  $('#runTitle').textContent =
+    mode === 'copy'    ? '正在无损直通…' :
+    mode === 'remux'   ? '正在转换音频…' : '正在重新压缩…';
+  $('#runSub').innerHTML =
+    `${p.name} <span class="mono" style="color:var(--text-tertiary)">→</span> <span class="mono">${state.outName}</span>`;
+
+  // 直通/混合直通：不定长进度条（几秒就结束，跳动的数字反而制造不确定感）
+  const indetMode = (mode === 'copy');
+  $('#progWrap').hidden = indetMode;
+  $('#indet').hidden    = !indetMode;
+  if(indetMode){
+    $('#runMeta').textContent = '正在处理，通常几秒内完成';
+  }
+
+  state.job.timer = setInterval(tick, 60);
+}
+
+function tick(){
+  const job = state.job;
+  if(!job) return;
+  const p = state.profile;
+  const elapsed = (performance.now() - job.t0) / 1000;
+  let progress = Math.min(1, elapsed / job.total);
+
+  // 损坏文件：跑到 62% 时失败，比一开始就失败更像真实情况
+  if(p.broken && progress >= 0.62){
+    clearInterval(job.timer);
+    failJob();
+    return;
+  }
+
+  if(job.mode !== 'copy'){
+    const pct = Math.round(progress * 100);
+    $('#progFill').style.width = pct + '%';
+    $('#progPct').textContent  = pct + '%';
+    $('#progBar').setAttribute('aria-valuenow', pct);
+
+    const used = progress * job.total;
+    const left = Math.max(0, job.total - used);
+    $('#runMeta').textContent = `已用 ${fmtDur(used)} · 剩余约 ${fmtDur(left)}`;
+  }
+
+  if(progress >= 1){
+    clearInterval(job.timer);
+    finishJob();
+  }
+}
+
+function finishJob(){
+  const job = state.job;
+  const p = state.profile;
+  const f = FORMATS.find(x => x.key === state.target);
+
+  state.stage = 'done';
+  renderAll();
+
+  const fromMB = p.sizeMB;
+  const toMB   = fromMB * SIZE_RATIO[job.mode];
+  $('#doneFile').textContent  = state.outName;
+  $('#doneFrom').textContent  = fmtSize(fromMB);
+  $('#doneTo').textContent    = fmtSize(toMB);
+
+  const delta = $('#doneDelta');
+  if(job.mode === 'copy'){
+    delta.textContent = '体积基本不变，画质完全保留';
+    delta.classList.add('is-flat');
+  }else{
+    const cut = Math.round((1 - toMB / fromMB) * 100);
+    delta.textContent = `减少 ${cut}%`;
+    delta.classList.remove('is-flat');
+  }
+
+  $('#doneMeta').textContent =
+    `耗时 ${fmtDur(job.total)} · ` +
+    (job.mode === 'copy' ? '无损直通' : job.mode === 'remux' ? '混合直通' : '重新压缩') +
+    ' · 已校验可播放';
+
+  state.job = null;
+  toast('转换完成', 'success');
+
+  if(state.openFolder){
+    setTimeout(() => toast('已为你打开输出文件夹', 'info'), 900);
+  }
+}
+
+function failJob(){
+  state.stage = 'error';
+  renderAll();
+  const p = state.profile;
+  $('#errMsg').textContent = p && p.broken
+    ? '这个文件没有正常结束，通常是下载或拷贝过程中断了。请重新获取原始文件后再试。'
+    : '转换过程被中断了。请确认文件可以正常播放，或换一个格式再试。';
+  state.job = null;
+  toast('转换失败', 'error');
+}
+
+function cancelJob(){
+  if(state.job && state.job.timer) clearInterval(state.job.timer);
+  state.job = null;
+  state.stage = 'setup';
+  renderAll();
+  toast('已取消转换', 'info');
+}
+
+function resetToEmpty(){
+  if(state.job && state.job.timer) clearInterval(state.job.timer);
+  state.job = null;
+  state.profile = null;
+  state.stage = 'empty';
+  renderAll();
+}
+
+/* ===========================================================================
+   10. 任务队列页
+   =========================================================================== */
+function renderQueue(){
+  const box = $('#queueCurrent');
+  const job = state.job;
+
+  if(!job || !state.profile){
+    box.innerHTML = `
+      <div class="empty-block">
+        <div class="e-ico"><svg><use href="#i-queue"/></svg></div>
+        <h3>当前没有正在进行的任务</h3>
+        <p>在转换页选择一个视频和格式就可以开始</p>
+        <button class="btn btn-secondary" type="button" onclick="go('convert')">前往转换页</button>
+      </div>`;
+    return;
+  }
+
+  const p = state.profile;
+  const f = FORMATS.find(x => x.key === state.target);
+  const elapsed = (performance.now() - job.t0) / 1000;
+  const progress = Math.min(1, elapsed / job.total);
+  const pct = Math.round(progress * 100);
+
+  box.innerHTML = `
+    <div class="queue-row">
+      <div class="q-ico">${f.name}</div>
+      <div class="q-body">
+        <div class="q-name">${p.name} <span class="arrow">→</span> ${f.name}</div>
+        <div class="q-bar"><i style="width:${job.mode === 'copy' ? 100 : pct}%;opacity:${job.mode === 'copy' ? .45 : 1}"></i></div>
+        <div class="q-meta">已用 ${fmtDur(elapsed)} · 剩余约 ${fmtDur(Math.max(0, job.total - elapsed))}</div>
+      </div>
+      <div class="q-right">
+        <span class="q-pct">${job.mode === 'copy' ? '处理中' : pct + '%'}</span>
+        <button class="btn btn-secondary" type="button" onclick="cancelJob()">取消</button>
+      </div>
+    </div>`;
+}
+
+/* 队列页进度跟随刷新 */
+setInterval(() => {
+  if(state.page === 'queue' && state.job) renderQueue();
+}, 400);
+
+/* ===========================================================================
+   11. 参数预设页
+   =========================================================================== */
+function renderPresets(){
+  const list = $('#presetList');
+  list.innerHTML = FORMATS.map(f => `
+    <div class="preset-card card">
+      <div class="preset-head">
+        <span class="pname">${f.name}</span>
+        <span class="pdesc">${PRESET_DESC[f.key]}</span>
+      </div>
+      <div class="tier-row" role="group" aria-label="${f.name} 质量档位">
+        ${['high','standard','small'].map(k => `
+          <button class="tier" type="button" data-fmt="${f.key}" data-tier="${k}"
+                  aria-pressed="${state.presets[f.key] === k}">
+            <span class="tname">${PRESET_MULT[k].name}</span>
+            <span class="tdesc">${PRESET_MULT[k].desc}</span>
+            <span class="tmult">体积约 ${MULT_TABLE[f.key][k]}</span>
+            <span class="tick"><svg><use href="#i-check"/></svg></span>
+          </button>`).join('')}
+      </div>
+    </div>`).join('');
+
+  $$('.tier', list).forEach(btn => {
+    btn.addEventListener('click', () => {
+      const { fmt, tier } = btn.dataset;
+      if(state.presets[fmt] === tier) return;
+      state.presets[fmt] = tier;
+      $$(`.tier[data-fmt="${fmt}"]`, list).forEach(b =>
+        b.setAttribute('aria-pressed', String(b.dataset.tier === tier)));
+      const fname = FORMATS.find(f => f.key === fmt).name;
+      toast(`${fname} 已设为「${PRESET_MULT[tier].name}」`, 'success');
+    });
+  });
+}
+
+/* ===========================================================================
+   12. 设置页交互
+   =========================================================================== */
+$('#setOpenFolder').addEventListener('click', e => {
+  const el = e.currentTarget;
+  const next = el.getAttribute('aria-checked') !== 'true';
+  el.setAttribute('aria-checked', String(next));
+  state.openFolder = next;
+  toast(next ? '转换完成后会自动打开所在文件夹' : '已关闭自动打开文件夹', 'info');
+});
+
+$('#setDefaultFmt').addEventListener('change', e => {
+  const f = FORMATS.find(x => x.key === e.target.value);
+  toast(`默认输出格式已设为 ${f.name}`, 'success');
+  if(state.stage === 'setup'){
+    state.target = e.target.value;
+    renderAll();
+  }
+});
+
+$$('#segDensity button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.density = btn.dataset.density;
+    $$('#segDensity button').forEach(b =>
+      b.setAttribute('aria-pressed', String(b.dataset.density === state.density)));
+    winEl.classList.toggle('density-compact', state.density === 'compact');
+    toast(state.density === 'compact' ? '已切换为紧凑密度' : '已切换为标准密度', 'info');
+  });
+});
+
+/* ===========================================================================
+   13. 首页按钮绑定
+   =========================================================================== */
+$('#btnPick').addEventListener('click', () => $('#fileInput').click());
+$('#fileInput').addEventListener('change', e => {
+  const file = e.target.files && e.target.files[0];
+  if(file) loadProfile(profileFromFile(file));
+  e.target.value = '';
+});
+
+$$('[data-demo]').forEach(btn => {
+  btn.addEventListener('click', () => {
+    if(state.stage !== 'empty'){
+      toast('当前已有一个文件，请先更换或完成转换', 'warning');
+      return;
+    }
+    loadProfile(PROFILES[btn.dataset.demo]);
+  });
+});
+
+$('#btnReplace').addEventListener('click', () => {
+  if(state.job) cancelJob();
+  resetToEmpty();
+});
+
+$('#btnStart').addEventListener('click', startJob);
+$('#btnCancel').addEventListener('click', cancelJob);
+
+$('#btnChangePath').addEventListener('click', () =>
+  toast('原型演示：此处会打开系统文件夹选择框', 'info'));
+
+$('#btnOpenFolder').addEventListener('click', () =>
+  toast('已打开输出文件夹', 'success'));
+
+$('#btnAgain').addEventListener('click', resetToEmpty);
+
+$('#btnCopyDiag').addEventListener('click', async () => {
+  const p = state.profile;
+  const f = FORMATS.find(x => x.key === state.target);
+  const diag =
+`时间：${new Date().toLocaleString('zh-CN')}
+文件：${p ? p.name : '未知'}
+大小：${p ? fmtSize(p.sizeMB) : '未知'}
+时长：${p ? fmtDur(p.durationSec) : '未知'}
+目标格式：${f ? f.name : '未知'}
+阶段：转换中断
+应用版本：v0.1.0`;
+  try{
+    await navigator.clipboard.writeText(diag);
+    toast('诊断信息已复制', 'success');
+  }catch(err){
+    toast('当前环境不支持自动复制，诊断信息已打印到控制台', 'warning');
+    console.log('[诊断信息]\n' + diag);
+  }
+});
+
+$('#btnTryOther').addEventListener('click', () => {
+  const next = FORMATS.find(f => f.key !== state.target);
+  state.target = next.key;
+  state.stage = 'setup';
+  renderAll();
+  toast(`已切换到 ${next.name}，可以再试一次`, 'info');
+});
+
+/* Esc 取消转换 */
+document.addEventListener('keydown', e => {
+  if(e.key === 'Escape' && state.stage === 'running') cancelJob();
+});
+
+/* ===========================================================================
+   14. 窗口尺寸切换（原型工具，非产品 UI）
+   =========================================================================== */
+const SIZES = { '1080x720':[1080,720], '860x600':[860,600] };
+
+function applySize(){
+  const [w, h] = SIZES[state.size];
+  winEl.style.width  = w + 'px';
+  winEl.style.height = h + 'px';
+  winEl.classList.toggle('is-small', state.size === '860x600');
+  $$('.stage-bar button').forEach(b =>
+    b.setAttribute('aria-pressed', String(b.dataset.size === state.size)));
+  fit();
+}
+
+function fit(){
+  const [w, h] = SIZES[state.size];
+  const s = Math.min(1, (window.innerWidth - 64) / w, (window.innerHeight - 110) / h);
+  winEl.style.transform = `scale(${s})`;
+  const inner = $('#stageInner');
+  inner.style.width  = (w * s) + 'px';
+  inner.style.height = (h * s) + 'px';
+}
+
+$$('.stage-bar button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    state.size = btn.dataset.size;
+    $$('.stage-bar button').forEach(b => b.setAttribute('aria-pressed', String(b.dataset.size === state.size)));
+    applySize();
+    toast(`预览尺寸已切换为 ${state.size.replace('x',' × ')}`, 'info');
+  });
+});
+window.addEventListener('resize', fit);
+
+/* ===========================================================================
+   15. 启动
+   =========================================================================== */
+renderPresets();
+renderAll();
+applySize();
+</script>
+</body>
+</html>
