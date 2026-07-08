@@ -53,7 +53,8 @@ pnpm dev
 | `pnpm typecheck` / `pnpm lint` | 类型 / ESLint（0 warning 策略） |
 | `pnpm test` | 纯函数单测（毫秒级，随时可跑） |
 | `pnpm test:int` | 集成测试：真起 ffmpeg 转真文件 |
-| `pnpm test:all` | 全量（串行，约 16s） |
+| `pnpm test:matrix` | 4×8 全组合回归，产出 `docs/regression-report.md` |
+| `pnpm test:all` | 全量（串行，约 45s） |
 | `pnpm fixtures` | 用本机 ffmpeg 生成 `tests/fixtures/` |
 
 > ⚠️ 如果终端本身跑在 Electron 里（如某些 IDE 的内嵌终端），`ELECTRON_RUN_AS_NODE=1`
@@ -114,6 +115,11 @@ mode        = 画面copy ? (音频copy/none ? copy : remux) : transcode
 2. `-map 0:a:0?` 的问号是**可选映射**。少了它，纯视频文件会直接失败。
 3. `-crf` 与 `-b:v` 互斥（VP9 例外，必须 `-crf N -b:v 0`）；
    `-preset` 只给 x264/x265，老编码器传了会报错。
+4. **AVI 的白名单里故意不含 h264**：AVI 要 Annex-B 起始码，而 MP4/MKV 里的 H.264 是 AVCC，
+   直接 copy 会被 muxer 拒绝（`h264 bitstream malformed, no startcode found`）。
+   理论上加 `-bsf:v h264_mp4toannexb` 能塞进去，但产出的 AVI 老设备放不了——
+   而「能被老设备播放」正是 AVI 在这个产品里唯一的存在理由。所以 AVI 一律重编码成 mpeg4。
+   （这个问题是 32 组合回归测试跑出来的，单测发现不了。）
 
 ### 4.2 输出不覆盖、不留残片
 
@@ -157,11 +163,12 @@ mode        = 画面copy ? (音频copy/none ? copy : remux) : transcode
 
 | 层 | 文件 | 手段 |
 |---|---|---|
-| 纯函数 | `tests/unit/*.test.ts` | 118 例。planner 判定矩阵、容器矩阵自洽、stderr 翻译、路径避让、ffprobe 归一化 |
+| 纯函数 | `tests/unit/*.test.ts` | 119 例。planner 判定矩阵、容器矩阵自洽、stderr 翻译、路径避让、ffprobe 归一化 |
 | 集成 | `tests/integration/*.test.ts` | 27 例。真 ffprobe 读真文件、真 ffmpeg 转码、真实取消、校验失败删文件 |
+| 回归 | `tests/regression/matrix.test.ts` | 32 例。4 类源 × 8 目标全组合真转 + ffprobe 读回，报告见 [docs/regression-report.md](docs/regression-report.md) |
 
-集成测试检测不到 ffmpeg 或 fixture 时会 **skip 并打印醒目警告**，
-不会假装通过。
+集成/回归测试检测不到 ffmpeg 或 fixture 时会 **skip 并打印醒目警告**，
+不会假装通过。当前 32/32 组合通过（含直通、混合直通、全量重编码三种路径）。
 
 ---
 

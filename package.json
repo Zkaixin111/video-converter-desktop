@@ -15,6 +15,7 @@
     "test": "vitest run tests/unit",
     "test:watch": "vitest tests/unit",
     "test:int": "vitest run tests/integration",
+    "test:matrix": "vitest run tests/regression",
     "test:all": "vitest run",
     "fixtures": "node scripts/make-fixtures.mjs"
   },

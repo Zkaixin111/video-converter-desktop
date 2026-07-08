@@ -80,7 +80,14 @@ export const CONTAINERS: Record<ContainerKey, ContainerSpec> = {
     ext: '.avi',
     muxer: 'avi',
     faststart: false,
-    videoCodecs: ['mpeg4', 'h264', 'mpeg2video', 'mpeg1video', 'wmv2', 'wmv3'],
+    // ⚠️ 这里**故意不含 h264**。
+    // AVI 需要 Annex-B 起始码，而 MP4/MKV 里的 H.264 是 AVCC 格式，
+    // 直接 `-c:v copy` 进 AVI 会被 muxer 拒绝：
+    //   "h264 bitstream malformed, no startcode found ... Invalid data found when processing input"
+    // 理论上加 `-bsf:v h264_mp4toannexb` 能塞进去，但产出的 AVI 老设备基本放不了——
+    // 而「能被老设备播放」正是 AVI 在这个产品里唯一的存在理由。
+    // 所以一律重编码成 mpeg4（DivX 系兼容性最好）。
+    videoCodecs: ['mpeg4', 'mpeg2video', 'mpeg1video', 'wmv2', 'wmv3'],
     audioCodecs: ['mp3', 'ac3', 'pcm_s16le', 'wmav2'],
     defaultVideo: 'mpeg4',
     defaultAudio: 'libmp3lame',

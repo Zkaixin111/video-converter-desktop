@@ -72,8 +72,9 @@ describe('planConversion · 判定矩阵', () => {
 
     // ── 全量重编码：画面装不下，音频顺带一起做 ──
     { name: 'h264 → webm', video: 'h264', audio: 'aac', target: 'webm', mode: 'transcode', videoAction: 'encode', audioAction: 'encode' },
-    // AVI 的白名单里含 h264（能装），但装不下 aac → 只转音频
-    { name: 'h264+aac → avi（画面能装，音频不能）', video: 'h264', audio: 'aac', target: 'avi', mode: 'remux', videoAction: 'copy', audioAction: 'encode' },
+    // AVI 不收 H.264（AVCC 与 AVI 的 Annex-B 不兼容，见 containers.ts 注释），必须重编码
+    { name: 'h264+aac → avi', video: 'h264', audio: 'aac', target: 'avi', mode: 'transcode', videoAction: 'encode', audioAction: 'encode' },
+    { name: 'mpeg4+mp3 → avi（老编码直通）', video: 'mpeg4', audio: 'mp3', target: 'avi', mode: 'copy', videoAction: 'copy', audioAction: 'copy' },
     { name: 'h264 → wmv', video: 'h264', audio: 'aac', target: 'wmv', mode: 'transcode', videoAction: 'encode', audioAction: 'encode' },
     { name: 'h264 → mpeg', video: 'h264', audio: 'aac', target: 'mpeg', mode: 'transcode', videoAction: 'encode', audioAction: 'encode' },
     { name: 'hevc → avi（avi 不收 hevc）', video: 'hevc', audio: 'aac', target: 'avi', mode: 'transcode', videoAction: 'encode', audioAction: 'encode' },
