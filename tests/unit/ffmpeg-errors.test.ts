@@ -1,0 +1,92 @@
+/**
+ * ffmpeg stderr 翻译测试。
+ *
+ * 喂的都是真实跑出来的报错片段（不是编的字符串）——
+ * 这些正则一旦和真实输出对不上，用户看到的就是「出现未知错误」。
+ */
+import { describe, expect, it } from 'vitest';
+import { translateFfmpegError } from '../../src/main/core/ffmpeg/errors';
+
+const CASES: { name: string; stderr: string; code: string }[] = [
+  {
+    name: 'moov atom 缺失（下载中断）',
+    stderr: `[mov,mp4,m4a,3gp,3g2,mj2 @ 000001] moov atom not found
+C:\\videos\\broken.mp4: Invalid data found when processing input`,
+    code: 'E_CORRUPT_FILE',
+  },
+  {
+    name: '非视频内容（后缀造假）',
+    stderr: `[mov,mp4,m4a @ 000001] Invalid data found when processing input
+tests\\fixtures\\fake.mp4: Invalid data found when processing input`,
+    code: 'E_INVALID_INPUT',
+  },
+  {
+    name: '磁盘写满',
+    stderr: `av_interleaved_write_frame(): No space left on device
+Error writing trailer of out.mp4: No space left on device`,
+    code: 'E_DISK_FULL',
+  },
+  {
+    name: '目标文件被占用',
+    stderr: `Could not open output file out.mp4: Permission denied
+[AVIOContext @ 000001] Error opening output out.mp4: Permission denied`,
+    code: 'E_PERMISSION',
+  },
+  {
+    name: '编码器不存在',
+    stderr: `Unknown encoder 'libx264'`,
+    code: 'E_ENCODER_MISSING',
+  },
+  {
+    name: '编码器初始化失败',
+    stderr: `[libx264 @ 000001] Error while opening encoder - maybe incorrect parameters such as bit_rate, rate, width or height`,
+    code: 'E_ENCODER_INIT',
+  },
+  {
+    name: '兜底：Conversion failed',
+    stderr: `frame=  120 fps= 60 q=28.0 size=     256kB time=00:00:04.00 bitrate= 524.3kbits/s
+Conversion failed!`,
+    code: 'E_FFMPEG_FAILED',
+  },
+];
+
+describe('translateFfmpegError', () => {
+  for (const c of CASES) {
+    it(`${c.name} → ${c.code}`, () => {
+      const err = translateFfmpegError(c.stderr, 1);
+      expect(err.code).toBe(c.code);
+      expect(err.message.length).toBeGreaterThan(0);
+      // 中文文案：至少要含一个中文字符，避免把英文原文糊到用户脸上
+      expect(/[\u4e00-\u9fa5]/.test(err.message)).toBe(true);
+    });
+  }
+
+  it('detail 里带退出码与 stderr 末 20 行', () => {
+    const err = translateFfmpegError('line\n'.repeat(100) + 'Unknown encoder', 1);
+    expect(err.detail).toContain('退出码: 1');
+    expect(err.detail).toContain('Unknown encoder');
+    // 只保留末 20 行，不能把几万行日志塞进剪贴板
+    expect((err.detail ?? '').split('\n').length).toBeLessThanOrEqual(24);
+  });
+
+  it('规则优先级：moov atom 命中时不会再被 Invalid data 抢走', () => {
+    // 这条 stderr 同时含两个关键词，必须落到更具体的 E_CORRUPT_FILE
+    const err = translateFfmpegError(
+      'moov atom not found\nInvalid data found when processing input',
+      1,
+    );
+    expect(err.code).toBe('E_CORRUPT_FILE');
+  });
+
+  it('完全无法识别的 stderr → E_UNKNOWN，但仍保留诊断信息', () => {
+    const err = translateFfmpegError('something totally unexpected', 137);
+    expect(err.code).toBe('E_UNKNOWN');
+    expect(err.detail).toContain('137');
+  });
+
+  it('每条规则都给了 hint（用户需要知道下一步做什么）', () => {
+    for (const c of CASES) {
+      expect(translateFfmpegError(c.stderr, 1).hint).toBeTruthy();
+    }
+  });
+});

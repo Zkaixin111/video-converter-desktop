@@ -1,0 +1,11 @@
+# pnpm 10+ 默认不执行依赖的构建脚本。
+# electron 的 postinstall 负责下载 Electron 二进制，不放行的话 node_modules/electron/dist 是空的，
+# 表现为 `pnpm dev` 直接报 "Electron failed to install correctly"。
+allowBuilds:
+  electron: true
+  electron-winstaller: true
+  esbuild: true
+
+# 本机 pnpm 的 isolated 链接模式只创建元数据、不创建顶层链接（react / electron 均无法解析），
+# 改用 hoisted：依赖直接铺平到 node_modules，不依赖符号链接，electron-builder 也更省心。
+nodeLinker: hoisted

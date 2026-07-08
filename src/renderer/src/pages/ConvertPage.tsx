@@ -1,0 +1,157 @@
+/**
+ * 转换页（原型 #page-convert）。
+ *
+ * 五种阶段互斥渲染：empty / probing → 拖拽区；setup / running / done / error → 文件卡 + 对应卡片。
+ * 所有判定结果都来自主进程（planner + outputPath），这里只做展示与动作转发。
+ */
+import type { ReactElement } from 'react';
+import { useAppStore } from '../store/useAppStore';
+import { DropZone } from '../components/convert/DropZone';
+import { MediaCard } from '../components/convert/MediaCard';
+import { TargetPicker } from '../components/convert/TargetPicker';
+import { PlanSummary } from '../components/convert/PlanSummary';
+import { ProgressPanel } from '../components/convert/ProgressPanel';
+import { ResultCard } from '../components/convert/ResultCard';
+import { ErrorPanel } from '../components/convert/ErrorPanel';
+import { Button } from '../components/ui/Button';
+import { Icon } from '../components/ui/Icon';
+
+/** 转换引擎缺失时的引导态：比「按钮点了没反应」明确得多 */
+function GuideCard(): ReactElement {
+  const caps = useAppStore((s) => s.caps);
+  const recheck = useAppStore((s) => s.recheckCaps);
+  const missing = caps?.ffmpeg.missing ?? [];
+  const ffmpegPath = caps?.ffmpeg.ffmpegPath ?? '';
+  const dir = ffmpegPath ? ffmpegPath.replace(/[\\/][^\\/]+$/, '') : '';
+  // 文件在、但缺 libx264：LGPL 精简版 ffmpeg 的典型症状，和「文件不存在」要分开说
+  const noEncoder = missing.length === 0;
+
+  return (
+    <div className="card guide-card">
+      <div className="guide-title">
+        <Icon name="i-alert" />
+        {noEncoder ? '转换组件不完整' : '缺少转换组件（FFmpeg）'}
+      </div>
+      <p>
+        {noEncoder
+          ? '已找到 FFmpeg，但它没有内置 H.264 编码器（libx264），转画面时会直接失败。请换一个完整版（full build）的 FFmpeg。'
+          : '应用内置的转码引擎没有找到，暂时无法转换任何文件。请把 ffmpeg.exe 与 ffprobe.exe 放到下面的目录，然后点「重新检测」。'}
+      </p>
+      <div className="guide-path">
+        {noEncoder ? '缺少：libx264 编码器' : `缺失：${missing.join('、')}`}
+      </div>
+      {dir ? <div className="guide-path">目录：{dir}</div> : null}
+      <div className="guide-actions">
+        <Button variant="secondary" onClick={() => void recheck()}>
+          <Icon name="i-refresh" />
+          重新检测
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+export function ConvertPage(): ReactElement {
+  const stage = useAppStore((s) => s.stage);
+  const meta = useAppStore((s) => s.meta);
+  const thumb = useAppStore((s) => s.thumb);
+  const target = useAppStore((s) => s.target);
+  const plan = useAppStore((s) => s.plan);
+  const outputPath = useAppStore((s) => s.outputPath);
+  const progress = useAppStore((s) => s.progress);
+  const result = useAppStore((s) => s.result);
+  const error = useAppStore((s) => s.error);
+  const busy = useAppStore((s) => s.busy);
+  const caps = useAppStore((s) => s.caps);
+
+  const pickFile = useAppStore((s) => s.pickFile);
+  const setTarget = useAppStore((s) => s.setTarget);
+  const chooseOutputDir = useAppStore((s) => s.chooseOutputDir);
+  const start = useAppStore((s) => s.start);
+  const cancel = useAppStore((s) => s.cancel);
+  const reset = useAppStore((s) => s.reset);
+  const tryAnotherFormat = useAppStore((s) => s.tryAnotherFormat);
+  const copyDiagnostics = useAppStore((s) => s.copyDiagnostics);
+  const toast = useAppStore((s) => s.toast);
+
+  const engineMissing = caps ? !caps.ffmpeg.ok : false;
+  const empty = stage === 'empty' || stage === 'probing';
+
+  return (
+    <section className="page" aria-label="转换">
+      <header className="page-head">
+        <h1>转换</h1>
+        <p>拖入视频文件，选择一个目标格式，我们负责让它一定能用。</p>
+      </header>
+
+      {empty ? (
+        engineMissing ? (
+          <GuideCard />
+        ) : (
+          <DropZone busy={stage === 'probing'} onPick={() => void pickFile()} />
+        )
+      ) : null}
+
+      {!empty && meta ? (
+        <div>
+          <MediaCard meta={meta} thumb={thumb} onReplace={reset} />
+
+          {stage === 'setup' ? (
+            <div>
+              <div className="section-label">输出格式</div>
+              <TargetPicker value={target} disabled={busy} onChange={(t) => void setTarget(t)} />
+
+              <div className="section-label">转换方式</div>
+              <PlanSummary plan={plan} />
+
+              <div className="output-row">
+                <span className="lbl">输出位置</span>
+                <span className="path mono" title={outputPath}>
+                  {outputPath || '—'}
+                </span>
+                <button type="button" className="btn-text" onClick={() => void chooseOutputDir()}>
+                  更改
+                </button>
+              </div>
+
+              <div className="action-row">
+                <Button variant="primary" size="lg" disabled={busy} onClick={() => void start()}>
+                  {busy ? '正在准备…' : '开始转换'}
+                </Button>
+              </div>
+            </div>
+          ) : null}
+
+          {stage === 'running' ? (
+            <ProgressPanel
+              mode={plan?.mode ?? 'transcode'}
+              fileName={meta.fileName}
+              outputPath={outputPath}
+              progress={progress}
+              onCancel={() => void cancel()}
+            />
+          ) : null}
+
+          {stage === 'done' && result ? (
+            <ResultCard
+              result={result}
+              onOpenFolder={() => {
+                void window.api.openFolder(result.outputPath);
+                toast('已打开输出文件夹', 'success');
+              }}
+              onAgain={reset}
+            />
+          ) : null}
+
+          {stage === 'error' && error ? (
+            <ErrorPanel
+              error={error}
+              onCopyDiagnostics={() => void copyDiagnostics()}
+              onTryAnother={() => void tryAnotherFormat()}
+            />
+          ) : null}
+        </div>
+      ) : null}
+    </section>
+  );
+}

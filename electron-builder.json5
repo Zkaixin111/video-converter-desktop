@@ -1,0 +1,55 @@
+// @see - https://www.electron.build/configuration/configuration
+{
+  "$schema": "https://raw.githubusercontent.com/electron-userland/electron-builder/master/packages/app-builder-lib/scheme.json",
+  "appId": "com.zkaixin.videoconverter",
+  "asar": true,
+  "productName": "VideoConverter",
+  "directories": {
+    "output": "release/${version}"
+  },
+  "files": [
+    "dist",
+    "dist-electron"
+  ],
+  // ── FFmpeg 二进制随包分发 ────────────────────────────────────────────
+  // 只把 dist / dist-electron 打进 asar，二进制走 extraResources 放在 asar 外面：
+  //   · 主进程要 spawn 它，asar 里的文件无法直接执行（即便 asarUnpack 也是解到临时目录）
+  //   · 体积 200MB+，塞进 asar 会让启动期的 asar 索引变慢
+  // 目录结构保持与开发态一致（bin/<平台>-<架构>/），路径解析不需要两套逻辑。
+  "extraResources": [
+    {
+      "from": "resources/bin",
+      "to": "bin",
+      "filter": ["**/*"]
+    }
+  ],
+  "mac": {
+    "target": [
+      "dmg"
+    ],
+    "artifactName": "${productName}-Mac-${version}-Installer.${ext}"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "artifactName": "${productName}-Windows-${version}-Setup.${ext}"
+  },
+  "nsis": {
+    "oneClick": false,
+    "perMachine": false,
+    "allowToChangeInstallationDirectory": true,
+    "deleteAppDataOnUninstall": false
+  },
+  "linux": {
+    "target": [
+      "AppImage"
+    ],
+    "artifactName": "${productName}-Linux-${version}.${ext}"
+  }
+}

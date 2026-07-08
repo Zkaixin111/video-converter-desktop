@@ -4,9 +4,12 @@ node_modules/
 
 # ── 构建与打包产物 ────────────────────────────────────
 dist/
+dist-electron/
+dist-ssr/
 out/
 release/
 build/
+.eslintcache
 *.tsbuildinfo
 *.log
 npm-debug.log*
@@ -19,8 +22,9 @@ vendor/
 *.dll
 *.dylib
 
-# ── 测试样本（由 scripts/make-fixtures.ps1 生成）──────
+# ── 测试样本（由 scripts/make-fixtures.mjs 生成）──────
 tests/fixtures/
+tests/.tmp/
 
 # ── 本地环境与密钥 ────────────────────────────────────
 .env
