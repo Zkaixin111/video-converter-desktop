@@ -161,6 +161,13 @@ export const useAppStore = create<AppState>((set, get) => ({
     window.api.onProgress((progress) => set({ progress }));
 
     window.api.onState((snapshot: JobSnapshot) => {
+      // 终态事件可能是「已被放弃的任务」发来的：用户点了「更换」清空界面，
+      // 后台的 ffmpeg 还在收尾。此时若照单全收，界面会被一个 meta 为 null 的
+      // done/error 状态带走，变成白屏。所以没有当前文件时直接丢弃终态事件。
+      if (!get().meta && snapshot.status !== 'preparing' && snapshot.status !== 'running') {
+        return;
+      }
+
       switch (snapshot.status) {
         case 'done': {
           set({
@@ -331,14 +338,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   reset: () => {
-    const { target } = get();
+    const { target, stage } = get();
+    // 转换中点「更换」：先把后台任务停掉再把界面清空，
+    // 否则 ffmpeg 会在用户不知情的情况下继续跑完，还往磁盘写一个文件。
+    if (stage === 'running') void window.api.cancel();
+
     set({
       stage: 'empty',
       meta: null,
       thumb: null,
       plan: null,
       outputPath: '',
-      outputDir: null,
+      // 回到「设置里的默认保存位置」，而不是把用户改过的目录也一起忘掉
+      outputDir: get().settings?.defaultSavePath ?? null,
       progress: null,
       result: null,
       error: null,
