@@ -57,8 +57,19 @@ export function tmpFile(name: string): string {
   return path.join(TMP, name);
 }
 
+/**
+ * 清理临时目录。
+ *
+ * 清理属于「收尾」而不是「断言」，失败不该让整个测试文件变红：
+ * Windows 上刚 spawn 过的 ffmpeg 可能还短暂持有句柄，某些环境还会给
+ * 递归删除加上确认策略。这种情况只提示残留目录，用例结果照常判定。
+ */
 export function cleanupTmp(): void {
-  fs.rmSync(TMP, { recursive: true, force: true });
+  try {
+    fs.rmSync(TMP, { recursive: true, force: true });
+  } catch (err) {
+    console.warn(`⚠️  临时目录未能清理干净（不影响用例结果）：${TMP}\n   ${String(err)}`);
+  }
 }
 
 export function fileSize(p: string): number {

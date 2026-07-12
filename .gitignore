@@ -7,7 +7,8 @@ dist/
 dist-electron/
 dist-ssr/
 out/
-release/
+# 打包产物目录：默认 release/，调试时可能临时换成 release-xxx/
+release*/
 build/
 .eslintcache
 *.tsbuildinfo

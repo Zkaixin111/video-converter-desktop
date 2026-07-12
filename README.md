@@ -50,12 +50,14 @@ pnpm dev
 | `pnpm dev` | 启动开发态（主进程/preload 热重载 + 渲染层 HMR） |
 | `pnpm build` | 类型检查 + 构建 `dist/` 与 `dist-electron/` |
 | `pnpm dist` | 构建并打 Windows NSIS 安装包到 `release/` |
+| `pnpm dist:dir` | 只打包成目录形态（`release/<ver>/win-unpacked/`），跳过安装器，验证快 |
 | `pnpm typecheck` / `pnpm lint` | 类型 / ESLint（0 warning 策略） |
 | `pnpm test` | 纯函数单测（毫秒级，随时可跑） |
 | `pnpm test:int` | 集成测试：真起 ffmpeg 转真文件 |
 | `pnpm test:matrix` | 4×8 全组合回归，产出 `docs/regression-report.md` |
 | `pnpm test:all` | 全量（串行，约 45s） |
 | `pnpm fixtures` | 用本机 ffmpeg 生成 `tests/fixtures/` |
+| `pnpm smoke:packaged` | 对着**打包后的应用**跑探测→转换→校验全链路（需先启动应用并开调试端口，见 5.1） |
 
 > ⚠️ 如果终端本身跑在 Electron 里（如某些 IDE 的内嵌终端），`ELECTRON_RUN_AS_NODE=1`
 > 会让 `electron.exe` 退化成普通 Node，表现是 `app` 为 undefined。用
@@ -87,9 +89,12 @@ pnpm dev
 │   ├── shared/                  主进程与渲染进程共享的类型/矩阵/错误码
 │   └── renderer/                React 界面（1:1 对齐 UI 原型）
 ├── resources/bin/<平台>-<架构>/  FFmpeg 二进制（不入库）
-├── scripts/                     fixture 生成、CDP 截图
+├── scripts/                     fixture 生成、CDP 截图 / 逐页巡检 / 打包态冒烟
 ├── tests/                       unit（纯函数）+ integration（真转码）
-└── docs/BACKLOG.md              P1 / P2 清单
+└── docs/
+    ├── BACKLOG.md               P1 / P2 清单
+    ├── regression-report.md     32 组合回归结果（脚本生成）
+    └── screenshots/             打包态五页截图（CDP 抓取）
 ```
 
 ---
@@ -170,6 +175,30 @@ mode        = 画面copy ? (音频copy/none ? copy : remux) : transcode
 集成/回归测试检测不到 ffmpeg 或 fixture 时会 **skip 并打印醒目警告**，
 不会假装通过。当前 32/32 组合通过（含直通、混合直通、全量重编码三种路径）。
 
+### 5.1 打包态验证（不只看「构建成功」）
+
+开发态跑通 ≠ 装完能跑：两者的二进制路径完全不同。所以额外做一层打包后验证：
+
+```bash
+pnpm dist:dir                       # 产出 release/0.1.0/win-unpacked/
+release/0.1.0/win-unpacked/VideoConverter.exe --no-sandbox --remote-debugging-port=9223
+node scripts/smoke-packaged.mjs 9223     # 通过 window.api 跑真实链路
+node scripts/cdp-nav-check.mjs 9223      # 逐页点一遍并截图
+```
+
+实测结果（本机 Windows 11 / electron 44.9.0）：
+
+| 检查项 | 结果 |
+|---|---|
+| `capabilities.packaged` | `true` |
+| 引擎路径 | `<安装目录>/resources/bin/win32-x64/ffmpeg.exe`（extraResources 生效） |
+| 引擎版本 / libx264 | `9.0.2-full_build` / 有 |
+| H.264+AAC → WebM | `transcode`，1.1s，201 KB → 141 KB，`verified: true` |
+| `.part` 残留 | 无 |
+| 五个页面 | 全部正常渲染，见 [docs/screenshots](docs/screenshots) |
+
+安装包（NSIS，`oneClick: false`、可改安装路径）也能正常产出，见 `release/<ver>/VideoConverter-Windows-<ver>-Setup.exe`。
+
 ---
 
 ## 6. 已知限制（MVP 有意为之）
@@ -180,8 +209,8 @@ mode        = 画面copy ? (音频copy/none ? copy : remux) : transcode
 4. **单任务**：同一时刻只允许一个转换，并发会抢 CPU 且难做进度归因。
 5. **无断点续传**：取消后从头再来。
 6. **深色模式未实现**：Token 已预埋，开关按原型置灰。
-7. **打包仅验证 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
-   其他平台需要自行放入对应目录的二进制。
+7. **只验证了 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
+   其他平台需要自行放入对应目录的二进制；安装器未做代码签名，SmartScreen 会提示未知发布者。
 
 ---
 
