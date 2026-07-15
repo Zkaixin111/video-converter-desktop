@@ -23,8 +23,12 @@
 | 中文错误 | 7 类 ffmpeg 报错翻译成人话 + 下一步建议，技术细节只进「复制诊断信息」 |
 | 拖拽导入 | 整个窗口都是投放区；非视频文件在渲染层就拦下并提示 |
 | 设置持久化 | 默认保存位置 / 默认格式 / 完成后打开文件夹 / 界面密度（electron-store） |
+| **画质档位真实生效**（P1） | 参数预设页的 8 容器 × 3 档直接决定 CRF / 目标码率 / 音频码率；`standard` 与 MVP 参数逐字节一致 |
+| **转换历史**（P1） | 成功转换落一条记录（最多 100 条），队列页可回看产物大小、校验结果并打开所在文件夹 |
 
-**不在 MVP 内**（代码里已标 `P1` / `P2`，详见 [docs/BACKLOG.md](docs/BACKLOG.md)）：批量队列与历史记录、参数预设真正生效、硬件加速、深色模式、字幕与多音轨保留、画面裁剪/缩放。
+**不在 MVP 内**（代码里已标 `P1` / `P2`）：批量队列、硬件加速、深色模式、字幕与多音轨保留、画面裁剪/缩放、断点续传。
+完整的下一阶段排序、每项的范围与验收标准见 **[docs/ROADMAP-P1.md](docs/ROADMAP-P1.md)**，
+逐条状态见 [docs/BACKLOG.md](docs/BACKLOG.md)。
 
 ---
 
@@ -81,8 +85,9 @@ pnpm dev
 │   │   │   │   ├── errors.ts    stderr → 中文错误
 │   │   │   │   └── paths.ts     二进制路径（开发/打包两态）
 │   │   │   ├── fs/              输出路径避让、.part 临时文件
-│   │   │   └── job/             ConversionJob 状态机 + JobManager 单任务调度
+│   │   │   └── job/             ConversionJob 状态机 + JobManager 单任务调度 + history 历史存储
 │   │   ├── ipc/                 通道注册（每个 handler 做运行时入参校验）
+│   │   ├── history.ts           历史存储单例（唯一 import electron 的地方）
 │   │   ├── logger.ts            滚动日志（userData/logs/app.log）
 │   │   └── store.ts             electron-store 设置
 │   ├── preload/index.ts         具名 API 桥（不暴露 ipcRenderer）
@@ -93,6 +98,7 @@ pnpm dev
 ├── tests/                       unit（纯函数）+ integration（真转码）
 └── docs/
     ├── BACKLOG.md               P1 / P2 清单
+    ├── ROADMAP-P1.md            MVP 之后的扩展规划（排序 / 范围 / 验收标准）
     ├── regression-report.md     32 组合回归结果（脚本生成）
     └── screenshots/             打包态五页截图（CDP 抓取）
 ```
@@ -162,14 +168,37 @@ mode        = 画面copy ? (音频copy/none ? copy : remux) : transcode
 启动时自检不仅看文件在不在，还检查 `-encoders` 是否含 `libx264`
 （LGPL 精简版没有，转 H.264 会直接 Unknown encoder）——缺了就让界面进引导态。
 
+### 4.6 画质档位：一张表管三档，`standard` 永远等于 MVP
+
+档位数值全部集中在 `shared/containers.ts`（`CRF_BY_TIER` / `BITRATE_FACTOR_BY_TIER` /
+`AUDIO_BITRATE_BY_TIER`），planner 只负责取用，界面文案在 `renderer/lib/presets.ts`：
+
+```
+x264:   high 18 / standard 20 / small 26
+其它:   high 22 / standard 24 / small 30
+码率:   high 1.15× / standard 0.85× / small 0.45×（钳 800k~8000k）
+音频:   high 256k / standard 192k / small 96k（opus 各降一档）
+```
+
+`standard` 的三组数值与 MVP 完全相同，并且有一条集成测试真转两次，
+断言「不传档位」与「显式 standard」的**输出体积逐字节相同**——升级不能悄悄改掉老用户的结果。
+直通场景完全不看档位，界面也不会显示档位提示（避免「选了体积优先却没变小」的误解）。
+
+### 4.7 历史存储：可丢数据，绝不拖垮主链路
+
+`userData/history.json`，最多 100 条，写入走 `.tmp` + rename 原子替换。
+读取时任何异常（文件损坏、不是数组、字段缺失、权限不足）都退化成空列表并逐条过滤坏记录；
+写失败只记日志。历史是「可有可无」的数据，不能因为它让转换或启动失败。
+存储类不 import electron，路径由调用方注入，因此可以在 vitest 里直接 new 出来测。
+
 ---
 
 ## 5. 测试
 
 | 层 | 文件 | 手段 |
 |---|---|---|
-| 纯函数 | `tests/unit/*.test.ts` | 119 例。planner 判定矩阵、容器矩阵自洽、stderr 翻译、路径避让、ffprobe 归一化 |
-| 集成 | `tests/integration/*.test.ts` | 27 例。真 ffprobe 读真文件、真 ffmpeg 转码、真实取消、校验失败删文件 |
+| 纯函数 | `tests/unit/*.test.ts` | 145 例。planner 判定矩阵与档位、容器矩阵自洽、stderr 翻译、路径避让、ffprobe 归一化、历史存取与容错 |
+| 集成 | `tests/integration/*.test.ts` | 29 例。真 ffprobe 读真文件、真 ffmpeg 转码、真实取消、校验失败删文件、档位对产物大小的真实影响 |
 | 回归 | `tests/regression/matrix.test.ts` | 32 例。4 类源 × 8 目标全组合真转 + ffprobe 读回，报告见 [docs/regression-report.md](docs/regression-report.md) |
 
 集成/回归测试检测不到 ffmpeg 或 fixture 时会 **skip 并打印醒目警告**，
@@ -204,12 +233,14 @@ node scripts/cdp-nav-check.mjs 9223      # 逐页点一遍并截图
 ## 6. 已知限制（MVP 有意为之）
 
 1. **只处理第一条视频流 + 第一条音轨**；字幕轨与额外音轨会被丢弃，转换前会明确提示。
-2. **固定重编码参数**：兼容性优先的固定 CRF/码率，暂不接受用户调节（预设页只持久化不生效）。
+2. **重编码参数不可微调**：只有三档预设（高清优先 / 标准 / 体积优先），不支持手填 CRF、双遍编码或目标体积。
+   直通（只换封装）不经过编码器，因此档位对它是空操作。
 3. **校验是容器级的**：只确认「时长对得上、流没丢、文件不是 0 字节」，不做逐帧比对（P1-06）。
-4. **单任务**：同一时刻只允许一个转换，并发会抢 CPU 且难做进度归因。
+4. **单任务**：同一时刻只允许一个转换；批量队列需要先定交互（见 ROADMAP §5）。
 5. **无断点续传**：取消后从头再来。
-6. **深色模式未实现**：Token 已预埋，开关按原型置灰。
-7. **只验证了 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
+6. **历史只记成功**：失败与取消不进历史，也没有「重跑」按钮。
+7. **深色模式未实现**：Token 已预埋，开关按原型置灰。
+8. **只验证了 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
    其他平台需要自行放入对应目录的二进制；安装器未做代码签名，SmartScreen 会提示未知发布者。
 
 ---

@@ -7,7 +7,7 @@
  * ⚠️ `defaultVideo` 必须在该容器的 `videoCodecs` 白名单内，
  *    `defaultAudio` 同理（由 containers.test.ts 守护）。
  */
-import type { ContainerKey } from './types';
+import type { ContainerKey, PresetTier } from './types';
 
 export interface ContainerSpec {
   /** UI 上显示的短名 */
@@ -196,41 +196,92 @@ export function encoderCodec(encoder: string): string {
 export const CRF_ENCODERS = new Set(['libx264', 'libx265', 'libvpx-vp9', 'libsvtav1']);
 
 /**
+ * 画质档位 → 编码参数。
+ *
+ * 三档的语义来自参数预设页（原型 §页面三）：
+ *   high 高清优先 / standard 标准 / small 体积优先
+ *
+ * ⚠️ `standard` 的数值必须与 MVP 完全一致（CRF 20 / 24、码率 0.85×、音频 192k）。
+ * 这是「升级不改变老用户产出」的硬约束，由 tests/unit/containers.test.ts 钉死。
+ */
+export type QualityTier = PresetTier;
+
+/** CRF：x264 与其它编码器的感知曲线不同，分开给值；数值越小画质越好 */
+export const CRF_BY_TIER: Record<QualityTier, { x264: number; other: number }> = {
+  high: { x264: 18, other: 22 },
+  standard: { x264: 20, other: 24 },
+  small: { x264: 26, other: 30 },
+};
+
+/** 码率模式下相对源码率的系数（码率模式没有 CRF 可调，只能缩放目标码率） */
+export const BITRATE_FACTOR_BY_TIER: Record<QualityTier, number> = {
+  high: 1.15,
+  standard: 0.85,
+  small: 0.45,
+};
+
+/**
+ * 音频码率按「档位 × 编码器」给。opus 效率高于 AAC/MP3，同档位用更低的数值。
+ * 表里没有的编码器回落到该档位的 AAC 值（历史上的兜底行为保持不变）。
+ */
+const AUDIO_BITRATE_BY_TIER: Record<QualityTier, Record<string, string>> = {
+  high: {
+    aac: '256k',
+    libmp3lame: '256k',
+    mp3: '256k',
+    libopus: '160k',
+    wmav2: '256k',
+    mp2: '256k',
+    ac3: '256k',
+  },
+  standard: {
+    aac: '192k',
+    libmp3lame: '192k',
+    mp3: '192k',
+    libopus: '128k',
+    wmav2: '192k',
+    mp2: '192k',
+    ac3: '192k',
+  },
+  small: {
+    aac: '96k',
+    libmp3lame: '96k',
+    mp3: '96k',
+    libopus: '64k',
+    wmav2: '96k',
+    mp2: '128k',
+    ac3: '128k',
+  },
+};
+
+export function isPresetTier(v: unknown): v is QualityTier {
+  return v === 'high' || v === 'standard' || v === 'small';
+}
+
+/**
  * 视频质量参数。
- * - CRF 模式：x264/x265 用 20，其余用 24（同画质可用更高 CRF）
- * - VP9 必须配 `-b:v 0` 才是纯 CRF 模式
- * - 码率模式：不超过源码率的 85%，下限 800k，上限 8000k
+ * - CRF 模式：按档位取值，VP9 必须配 `-b:v 0` 才是纯 CRF
+ * - 码率模式：不超过「源码率 × 档位系数」，钳在 800k~8000k
+ *
+ * `tier` 缺省为 `standard`，与 MVP 行为逐字节一致。
  */
 export function buildVideoQualityArgs(
   encoder: string,
   srcBitrateKbps: number | null,
+  tier: QualityTier = 'standard',
 ): string[] {
   if (CRF_ENCODERS.has(encoder)) {
-    const crf = encoder === 'libx264' ? '20' : '24';
+    const crf = CRF_BY_TIER[tier][encoder === 'libx264' ? 'x264' : 'other'];
     const extra = encoder === 'libvpx-vp9' ? ['-b:v', '0'] : [];
-    return ['-crf', crf, ...extra];
+    return ['-crf', String(crf), ...extra];
   }
-  const target = Math.min(8000, Math.max(800, Math.round((srcBitrateKbps ?? 2500) * 0.85)));
+  const factor = BITRATE_FACTOR_BY_TIER[tier];
+  const target = Math.min(8000, Math.max(800, Math.round((srcBitrateKbps ?? 2500) * factor)));
   return ['-b:v', `${target}k`];
 }
 
-/** 音频码率：按编码器给一个合理值 */
-export function audioBitrateFor(encoder: string): string {
-  switch (encoder) {
-    case 'aac':
-      return '192k';
-    case 'libmp3lame':
-    case 'mp3':
-      return '192k';
-    case 'libopus':
-      return '128k';
-    case 'wmav2':
-      return '192k';
-    case 'mp2':
-      return '192k';
-    case 'ac3':
-      return '192k';
-    default:
-      return '192k';
-  }
+/** 音频码率：按「档位 × 编码器」取值，未知编码器回落到该档位的 AAC 值 */
+export function audioBitrateFor(encoder: string, tier: QualityTier = 'standard'): string {
+  const table = AUDIO_BITRATE_BY_TIER[tier];
+  return table[encoder] ?? table.aac;
 }

@@ -1,8 +1,9 @@
 /**
  * 参数预设页的静态数据（取自 UI 原型，数值一字未改）。
  *
- * ⚠️ 本页配置**不参与转换**：MVP 的质量档位只在 UI 上持久化，
- * 真正的 CRF / 码率选择在 P1 接入 planner。页面上已用灰色提示条如实说明。
+ * 展示用文案在这里；**真正决定编码参数的数值在 shared/containers.ts**
+ * （CRF_BY_TIER / BITRATE_FACTOR_BY_TIER / AUDIO_BITRATE_BY_TIER），
+ * 由 planner 消费。两处不要互相复制——一个给用户看，一个交给 ffmpeg。
  */
 import type { ContainerKey, PresetTier } from '../../../shared/types';
 

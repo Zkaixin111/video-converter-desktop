@@ -12,10 +12,12 @@ import { CH, EV } from '../shared/channels';
 import type {
   Capabilities,
   ContainerKey,
+  HistoryEntry,
   IpcResult,
   JobSnapshot,
   MediaMeta,
   PlanResult,
+  PresetTier,
   ProgressPayload,
   Settings,
 } from '../shared/types';
@@ -44,22 +46,27 @@ const api = {
     ipcRenderer.invoke(CH.thumbnail, { path, atSec }),
 
   /* ── 转换 ─────────────────────────────────────────────── */
-  plan: (meta: MediaMeta, target: ContainerKey): Promise<IpcResult<PlanResult>> =>
-    ipcRenderer.invoke(CH.plan, { meta, target }),
+  plan: (
+    meta: MediaMeta,
+    target: ContainerKey,
+    preset?: PresetTier,
+  ): Promise<IpcResult<PlanResult>> => ipcRenderer.invoke(CH.plan, { meta, target, preset }),
 
   preview: (
     meta: MediaMeta,
     target: ContainerKey,
     outputDir?: string | null,
+    preset?: PresetTier,
   ): Promise<IpcResult<{ plan: PlanResult; outputPath: string }>> =>
-    ipcRenderer.invoke(CH.preview, { meta, target, outputDir }),
+    ipcRenderer.invoke(CH.preview, { meta, target, outputDir, preset }),
 
   start: (
     meta: MediaMeta,
     target: ContainerKey,
     outputDir?: string | null,
+    preset?: PresetTier,
   ): Promise<IpcResult<{ jobId: string; plan: PlanResult; outputPath: string }>> =>
-    ipcRenderer.invoke(CH.start, { meta, target, outputDir }),
+    ipcRenderer.invoke(CH.start, { meta, target, outputDir, preset }),
 
   cancel: (): Promise<IpcResult<{ ok: boolean }>> => ipcRenderer.invoke(CH.cancel),
 
@@ -67,6 +74,14 @@ const api = {
 
   onProgress: (cb: (p: ProgressPayload) => void) => subscribe<ProgressPayload>(EV.progress, cb),
   onState: (cb: (s: JobSnapshot) => void) => subscribe<JobSnapshot>(EV.state, cb),
+
+  /* ── 历史 ─────────────────────────────────────────────── */
+  listHistory: (): Promise<IpcResult<HistoryEntry[]>> => ipcRenderer.invoke(CH.historyList),
+
+  removeHistory: (id: string): Promise<IpcResult<HistoryEntry[]>> =>
+    ipcRenderer.invoke(CH.historyRemove, { id }),
+
+  clearHistory: (): Promise<IpcResult<{ ok: boolean }>> => ipcRenderer.invoke(CH.historyClear),
 
   /* ── 系统 ─────────────────────────────────────────────── */
   openFolder: (path: string): Promise<IpcResult<{ ok: boolean }>> =>

@@ -33,3 +33,25 @@ export function outExt(target: ContainerKey): string {
 export function fmtBytesPlain(bytes: number): string {
   return fmtSize(bytes);
 }
+
+/**
+ * 历史列表用的相对时间。
+ *
+ * 刻意不用 toLocaleString：不同 Windows 区域设置下同一个 API 会给出
+ * 「2026/10/18 21:05」「18/10/2026 9:05 PM」两种完全不同的排版，
+ * 列表会左右参差。这里只输出两种固定形态：今天给 HH:mm，更早给 MM-DD HH:mm。
+ */
+export function fmtWhen(ts: number, now = Date.now()): string {
+  if (!Number.isFinite(ts) || ts <= 0) return '—';
+  const d = new Date(ts);
+  const p = (n: number) => String(n).padStart(2, '0');
+  const sameDay =
+    d.getFullYear() === new Date(now).getFullYear() &&
+    d.getMonth() === new Date(now).getMonth() &&
+    d.getDate() === new Date(now).getDate();
+
+  const diffMin = Math.floor((now - ts) / 60000);
+  if (sameDay && diffMin >= 0 && diffMin < 1) return '刚刚';
+  if (sameDay) return `${p(d.getHours())}:${p(d.getMinutes())}`;
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}

@@ -2,6 +2,7 @@
 import type { BrowserWindow } from 'electron';
 import { registerAppIpc } from './app';
 import { registerConvertIpc } from './convert';
+import { registerHistoryIpc } from './history';
 import { registerMediaIpc } from './media';
 import { registerShellIpc } from './shell';
 
@@ -10,4 +11,5 @@ export function registerAllIpc(getWindow: () => BrowserWindow | null): void {
   registerConvertIpc(getWindow);
   registerShellIpc(getWindow);
   registerAppIpc(getWindow);
+  registerHistoryIpc();
 }

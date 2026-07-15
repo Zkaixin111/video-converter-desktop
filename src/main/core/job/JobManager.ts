@@ -14,6 +14,7 @@ import type {
   JobSnapshot,
   MediaMeta,
   PlanResult,
+  PresetTier,
   ProgressPayload,
 } from '../../../shared/types';
 import { planConversion } from '../ffmpeg/planner';
@@ -23,6 +24,8 @@ import { ConversionJob } from './ConversionJob';
 export interface StartOptions {
   meta: MediaMeta;
   target: ContainerKey;
+  /** 画质档位，来自参数预设页；缺省 standard */
+  preset?: PresetTier;
   outputDir?: string | null;
   onProgress?: (payload: ProgressPayload) => void;
   onState?: (snapshot: JobSnapshot) => void;
@@ -48,7 +51,11 @@ export class JobManager {
       throw new AppError('E_BUSY', '已有任务在进行中，请等它结束或先取消。');
     }
 
-    const plan = planConversion({ meta: options.meta, target: options.target });
+    const plan = planConversion({
+      meta: options.meta,
+      target: options.target,
+      options: { preset: options.preset },
+    });
     const outputPath = resolveOutputPath(options.meta.path, options.target, {
       outputDir: options.outputDir ?? null,
     });

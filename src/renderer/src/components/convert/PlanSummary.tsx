@@ -9,6 +9,7 @@
  */
 import type { ReactElement } from 'react';
 import type { ConversionMode, PlanResult } from '../../../../shared/types';
+import { TIERS } from '../../lib/presets';
 import { Icon, type IconName } from '../ui/Icon';
 
 interface PlanSummaryProps {
@@ -62,6 +63,14 @@ export function PlanSummary({ plan, degraded = false }: PlanSummaryProps): React
   const meta = bannerFor(plan, degraded);
   const warnings = plan?.warnings ?? [];
 
+  // 档位只在「真的会重编码、且不是默认档」时补一行：默认档保持与原型一字不差，
+  // 直通场景则不该出现档位提示（它根本不经编码器）。
+  const tierName = plan ? TIERS.find((t) => t.key === plan.preset)?.name : undefined;
+  const tierNote =
+    plan && plan.mode !== 'copy' && plan.preset !== 'standard' && tierName
+      ? `画质档位：${tierName}（来自参数预设）`
+      : null;
+
   return (
     <div>
       {/* key 让 React 在模式变化时重建节点，避免属性补间造成的高度抖动 */}
@@ -73,8 +82,9 @@ export function PlanSummary({ plan, degraded = false }: PlanSummaryProps): React
         </div>
       </div>
 
-      {warnings.length > 0 ? (
+      {tierNote || warnings.length > 0 ? (
         <div className="banner-warnings">
+          {tierNote ? <span key="tier">· {tierNote}</span> : null}
           {warnings.map((w) => (
             <span key={w.code}>· {w.message}</span>
           ))}

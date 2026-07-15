@@ -287,3 +287,73 @@ describe('planConversion · 耗时估算', () => {
     expect(plan.estimate.approxSeconds).toBeGreaterThan(0);
   });
 });
+
+/**
+ * P1-03：画质档位贯通。
+ *
+ * 三条契约：
+ *   1. 不传档位 = standard，args 与 MVP 一致（升级不改老用户产出）
+ *   2. 高档位 CRF 更小、体积档 CRF 更大；直通场景完全不看档位
+ *   3. 脏档位（用户手改配置文件）回落 standard，而不是抛错
+ */
+describe('planConversion · 画质档位（P1-03）', () => {
+  it('缺省即 standard，并在结果里回填档位', () => {
+    const plan = planConversion({ meta: makeMeta(), target: 'webm' });
+    expect(plan.preset).toBe('standard');
+    // webm 的默认编码器是 libvpx-vp9 → standard 档 CRF 24，与 MVP 一致
+    expect(plan.args[plan.args.indexOf('-crf') + 1]).toBe('24');
+  });
+
+  it('high 档位把 CRF 调小、small 调大', () => {
+    const high = planConversion({ meta: makeMeta(), target: 'webm', options: { preset: 'high' } });
+    const small = planConversion({ meta: makeMeta(), target: 'webm', options: { preset: 'small' } });
+    const crfOf = (args: string[]) => Number(args[args.indexOf('-crf') + 1]);
+    expect(crfOf(high.args)).toBeLessThan(crfOf(small.args));
+    expect(high.preset).toBe('high');
+  });
+
+  it('档位不影响编码器选择与像素格式', () => {
+    // HEVC 源 → FLV（只认 h264），必然重编码到 libx264
+    const meta = makeMeta({ video: makeVideo({ codec: 'hevc' }) });
+    for (const preset of ['high', 'standard', 'small'] as const) {
+      const plan = planConversion({ meta, target: 'flv', options: { preset } });
+      expect(plan.mode).toBe('transcode');
+      expect(plan.args).toEqual(
+        expect.arrayContaining(['-c:v', 'libx264', '-preset', 'veryfast', '-pix_fmt', 'yuv420p']),
+      );
+    }
+  });
+
+  it('直通场景换任何档位，args 都不变（不经编码器）', () => {
+    const base = planConversion({ meta: makeMeta(), target: 'mp4' });
+    for (const preset of ['high', 'small'] as const) {
+      const plan = planConversion({ meta: makeMeta(), target: 'mp4', options: { preset } });
+      expect(plan.mode).toBe('copy');
+      expect(plan.args).toEqual(base.args);
+    }
+  });
+
+  it('混合直通（只转音频）时档位会改变音频码率', () => {
+    const meta = makeMeta({ audio: makeAudio({ codec: 'opus' }) });
+    const high = planConversion({ meta, target: 'mp4', options: { preset: 'high' } });
+    const small = planConversion({ meta, target: 'mp4', options: { preset: 'small' } });
+    expect(high.mode).toBe('remux');
+    expect(high.args[high.args.indexOf('-b:a') + 1]).toBe('256k');
+    expect(small.args[small.args.indexOf('-b:a') + 1]).toBe('96k');
+  });
+
+  it('非法档位回落 standard，不抛错', () => {
+    const plan = planConversion({
+      meta: makeMeta(),
+      target: 'webm',
+      options: { preset: 'ultra' as never },
+    });
+    expect(plan.preset).toBe('standard');
+  });
+
+  it('档位不会污染 warnings 与模式判定', () => {
+    const plan = planConversion({ meta: makeMeta(), target: 'webm', options: { preset: 'high' } });
+    expect(plan.mode).toBe('transcode');
+    expect(plan.warnings.some((w) => w.code === 'VFR_SOURCE')).toBe(false);
+  });
+});

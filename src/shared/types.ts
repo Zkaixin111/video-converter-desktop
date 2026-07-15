@@ -65,6 +65,8 @@ export interface PlanResult {
   args: string[];
   warnings: PlanWarning[];
   estimate: { kind: 'instant' | 'encoded'; approxSeconds: number; qualityNote: string };
+  /** 本次判定采用的画质档位（来自参数预设页）；直通模式下它不参与编码 */
+  preset: PresetTier;
 }
 
 export type JobStatus = 'idle' | 'preparing' | 'running' | 'done' | 'cancelled' | 'error';
@@ -110,6 +112,28 @@ export interface JobSnapshot {
   error?: JobError;
 }
 
+/**
+ * 一条转换历史（只在成功时写入）。
+ *
+ * 有意冗余存 `fileName` / `target` / 体积：历史要能独立展示，
+ * 不能依赖源文件还在不在——用户很可能转完就删了原片。
+ */
+export interface HistoryEntry {
+  /** 复用 jobId：天然唯一，重复写入可幂等去重 */
+  id: string;
+  fileName: string;
+  sourcePath: string;
+  outputPath: string;
+  target: ContainerKey;
+  mode: ConversionMode;
+  sourceSizeBytes: number;
+  outputSizeBytes: number;
+  elapsedMs: number;
+  verified: boolean;
+  /** epoch ms，列表按它倒序 */
+  finishedAt: number;
+}
+
 /** IPC 统一返回包装：不抛异常，避免 Electron 把错误序列化成难解析的字符串 */
 export type IpcResult<T> =
   | { ok: true; data: T }
@@ -139,7 +163,10 @@ export interface Settings {
   defaultOutputFormat: ContainerKey;
   openFolderAfterDone: boolean;
   density: 'normal' | 'compact';
-  /** 参数预设页的选择，MVP 只持久化、不参与转换 */
+  /**
+   * 参数预设页的质量档位。P1 起真实参与编码：
+   * 直通（copy）不改编码参数，因此档位对它是空操作。
+   */
   presets: Record<ContainerKey, PresetTier>;
 }
 

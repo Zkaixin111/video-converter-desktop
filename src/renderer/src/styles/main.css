@@ -1212,6 +1212,13 @@ svg {
   font-family: var(--font-mono);
 }
 
+/* 历史记录列表（P1）：复用 .queue-row 的版式，只是没有进度条，靠列表间距分开 */
+.queue-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .empty-block {
   padding: 44px 24px;
   text-align: center;

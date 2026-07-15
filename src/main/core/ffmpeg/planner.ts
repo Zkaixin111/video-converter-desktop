@@ -10,6 +10,7 @@ import {
   audioBitrateFor,
   buildVideoQualityArgs,
   isContainerKey,
+  isPresetTier,
 } from '../../../shared/containers';
 import { AppError } from '../../../shared/errors';
 import type {
@@ -18,13 +19,18 @@ import type {
   MediaMeta,
   PlanResult,
   PlanWarning,
+  PresetTier,
 } from '../../../shared/types';
 
 export interface PlanInput {
   meta: MediaMeta;
   target: ContainerKey;
-  /** MVP 固定 null；P1 接入分辨率缩放后传入 */
-  options?: { scaleHeight?: number } | null;
+  options?: {
+    /** P1：分辨率缩放预留，当前未接入 */
+    scaleHeight?: number;
+    /** 画质档位，来自参数预设页；缺省 standard 与 MVP 行为一致 */
+    preset?: PresetTier;
+  } | null;
 }
 
 /** 重编码时的预估系数：transcode 约 0.5× 实时，remux 只转音频，快得多 */
@@ -33,6 +39,10 @@ const REMUX_SPEED_FACTOR = 0.15;
 
 export function planConversion(input: PlanInput): PlanResult {
   const { meta, target } = input;
+  // 档位来自参数预设页。非法值一律当 standard 处理，不让脏设置把转码带崩。
+  const preset: PresetTier = isPresetTier(input.options?.preset)
+    ? input.options.preset
+    : 'standard';
 
   // ── 1. 前置校验 ──────────────────────────────────────────────
   if (!isContainerKey(target)) {
@@ -85,7 +95,7 @@ export function planConversion(input: PlanInput): PlanResult {
     if (spec.defaultVideo === 'libx264' || spec.defaultVideo === 'libx265') {
       args.push('-preset', 'veryfast');
     }
-    args.push(...buildVideoQualityArgs(spec.defaultVideo, video.bitrateKbps));
+    args.push(...buildVideoQualityArgs(spec.defaultVideo, video.bitrateKbps, preset));
     // 强制 8bit 4:2:0，兼容性最高（10bit 源在这里会被降到 8bit，下面会给警告）
     args.push('-pix_fmt', 'yuv420p');
   }
@@ -93,7 +103,7 @@ export function planConversion(input: PlanInput): PlanResult {
   if (audioAction === 'copy') {
     args.push('-c:a', 'copy');
   } else if (audioAction === 'encode') {
-    args.push('-c:a', spec.defaultAudio, '-b:a', audioBitrateFor(spec.defaultAudio));
+    args.push('-c:a', spec.defaultAudio, '-b:a', audioBitrateFor(spec.defaultAudio, preset));
   }
 
   if (spec.faststart) {
@@ -142,6 +152,13 @@ export function planConversion(input: PlanInput): PlanResult {
   const sizeMB = meta.sizeBytes / 1024 / 1024;
   const durationSec = meta.durationSec > 0 ? meta.durationSec : 0;
 
+  // 档位只影响「重新压缩」那条路：直通不经编码器，画质永远是 100%
+  const transcodeNote: Record<PresetTier, string> = {
+    high: '画质优先，体积可能比原文件更大',
+    standard: '画质略有损失',
+    small: '体积优先，画质有可见损失',
+  };
+
   const estimate =
     mode === 'copy'
       ? {
@@ -156,8 +173,8 @@ export function planConversion(input: PlanInput): PlanResult {
             3,
             Math.round(durationSec * (mode === 'remux' ? REMUX_SPEED_FACTOR : TRANSCODE_SPEED_FACTOR)),
           ),
-          qualityNote: mode === 'remux' ? '画面 100% 保留，仅音频转码' : '画质略有损失',
+          qualityNote: mode === 'remux' ? '画面 100% 保留，仅音频转码' : transcodeNote[preset],
         };
 
-  return { mode, videoAction, audioAction, args, warnings, estimate };
+  return { mode, videoAction, audioAction, args, warnings, estimate, preset };
 }

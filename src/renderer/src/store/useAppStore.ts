@@ -12,11 +12,13 @@ import { CONTAINERS } from '../../../shared/containers';
 import type {
   Capabilities,
   ContainerKey,
+  HistoryEntry,
   JobError,
   JobResult,
   JobSnapshot,
   MediaMeta,
   PlanResult,
+  PresetTier,
   ProgressPayload,
   Settings,
 } from '../../../shared/types';
@@ -59,6 +61,8 @@ interface AppState {
   settings: Settings | null;
   caps: Capabilities | null;
   toasts: ToastItem[];
+  /** 转换历史（主进程持久化，最新在前） */
+  history: HistoryEntry[];
 
   /* ── 动作 ─────────────────────────────── */
   init: () => Promise<void>;
@@ -73,6 +77,9 @@ interface AppState {
   reset: () => void;
   tryAnotherFormat: () => Promise<void>;
   updateSettings: (patch: Partial<Settings>) => Promise<void>;
+  loadHistory: () => Promise<void>;
+  removeHistory: (id: string) => Promise<void>;
+  clearHistory: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   toast: (message: string, type?: ToastType) => void;
   dismissToast: (id: number) => void;
@@ -110,6 +117,14 @@ function isVideoPath(filePath: string): boolean {
   return VIDEO_EXTS.includes(extOf(filePath));
 }
 
+/**
+ * 取某个容器的画质档位。
+ * 设置还没读到时按 standard —— 与主进程的缺省一致，避免首帧判定条闪一下。
+ */
+function presetFor(settings: Settings | null, target: ContainerKey): PresetTier {
+  return settings?.presets?.[target] ?? 'standard';
+}
+
 let toastSeq = 0;
 /** init 只允许跑一次：StrictMode 在开发态会双调用 effect，重复订阅会让每条 toast 弹两遍 */
 let booted = false;
@@ -132,6 +147,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   settings: null,
   caps: null,
   toasts: [],
+  history: [],
 
   /** 启动一次性初始化：读自检结果与设置、订阅主进程事件 */
   init: async () => {
@@ -157,6 +173,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       /* 设置读不到就用默认值，转换仍可进行 */
     }
 
+    // 历史是独立文件，读失败也只是空列表（主进程已兜底），不阻塞启动
+    void get().loadHistory();
+
     // 进度与终态由主进程推送。这里只订阅一次，组件卸载不取消（应用级订阅）
     window.api.onProgress((progress) => set({ progress }));
 
@@ -178,6 +197,8 @@ export const useAppStore = create<AppState>((set, get) => ({
             busy: false,
           });
           get().toast('转换完成', 'success');
+          // 主进程在终态回调里落了历史，这里刷新列表
+          void get().loadHistory();
           // 「完成后打开文件夹」是设置页真实生效的开关之一
           if (get().settings?.openFolderAfterDone && snapshot.result) {
             void window.api.openFolder(snapshot.result.outputPath);
@@ -254,8 +275,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     try {
       const meta = await call(window.api.probe(path));
+      const { target, settings, outputDir } = get();
       const { plan, outputPath } = await call(
-        window.api.preview(meta, get().target, get().outputDir),
+        window.api.preview(meta, target, outputDir, presetFor(settings, target)),
       );
 
       set({ meta, plan, outputPath, stage: 'setup', busy: false, thumb: null });
@@ -275,13 +297,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   setTarget: async (target) => {
-    const { meta, target: current, outputDir } = get();
+    const { meta, target: current, outputDir, settings } = get();
     if (current === target) return;
     set({ target });
 
     if (!meta) return;
     try {
-      const { plan, outputPath } = await call(window.api.preview(meta, target, outputDir));
+      const { plan, outputPath } = await call(
+        window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+      );
       // 期间用户可能又切了格式，只接受最后一次
       if (get().target !== target) return;
       set({ plan, outputPath });
@@ -297,9 +321,11 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set({ outputDir: path });
       // 立刻用新目录重算输出路径，避免「输入框显示 A，实际写到 B」
-      const { meta, target } = get();
+      const { meta, target, settings } = get();
       if (meta) {
-        const { plan, outputPath } = await call(window.api.preview(meta, target, path));
+        const { plan, outputPath } = await call(
+          window.api.preview(meta, target, path, presetFor(settings, target)),
+        );
         set({ plan, outputPath });
       }
       get().toast('已切换输出位置', 'success');
@@ -309,12 +335,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   start: async () => {
-    const { meta, target, outputDir, stage, busy } = get();
+    const { meta, target, outputDir, stage, busy, settings } = get();
     if (!meta || stage !== 'setup' || busy) return;
 
     set({ busy: true, progress: null, result: null, error: null });
     try {
-      const started = await call(window.api.start(meta, target, outputDir));
+      const started = await call(
+        window.api.start(meta, target, outputDir, presetFor(settings, target)),
+      );
       // 主进程可能因为同名冲突换了个文件名，以它返回的为准
       set({
         stage: 'running',
@@ -372,6 +400,45 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       const settings = await call(window.api.setSettings(patch));
       set({ settings });
+
+      // 改的是画质档位：转换页的判定条与输出参数必须立刻跟着变，
+      // 否则用户会看到「预设改了但预计耗时/参数没变」的假象。
+      if (patch.presets) {
+        const { meta, target, stage, outputDir } = get();
+        if (meta && stage === 'setup') {
+          const { plan, outputPath } = await call(
+            window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+          );
+          set({ plan, outputPath });
+        }
+      }
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  loadHistory: async () => {
+    try {
+      const history = await call(window.api.listHistory());
+      set({ history });
+    } catch {
+      /* 历史读不到就当空的，不能影响转换 */
+    }
+  },
+
+  removeHistory: async (id) => {
+    try {
+      set({ history: await call(window.api.removeHistory(id)) });
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  clearHistory: async () => {
+    try {
+      await call(window.api.clearHistory());
+      set({ history: [] });
+      get().toast('已清空转换历史', 'success');
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }

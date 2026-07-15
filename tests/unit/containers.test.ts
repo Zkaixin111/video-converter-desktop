@@ -107,3 +107,61 @@ describe('audioBitrateFor', () => {
     expect(audioBitrateFor('something-new')).toBe('192k');
   });
 });
+
+/**
+ * P1-03：档位真正生效。
+ *
+ * 这里同时钉住两条契约：
+ *   1. 缺省（standard）必须与 MVP 完全一致 —— 老用户升级后参数不能变
+ *   2. 三档之间必须真的不同 —— 否则「设置没生效」会以另一种形式复现
+ */
+describe('画质档位（P1-03）', () => {
+  it('缺省档位等价于 standard（与 MVP 逐字节一致）', () => {
+    expect(buildVideoQualityArgs('libx264', 5000)).toEqual(
+      buildVideoQualityArgs('libx264', 5000, 'standard'),
+    );
+    expect(audioBitrateFor('aac')).toBe(audioBitrateFor('aac', 'standard'));
+  });
+
+  it('x264：high 用 18，small 用 26', () => {
+    expect(buildVideoQualityArgs('libx264', 5000, 'high')).toEqual(['-crf', '18']);
+    expect(buildVideoQualityArgs('libx264', 5000, 'small')).toEqual(['-crf', '26']);
+  });
+
+  it('其它 CRF 编码器：high 22 / small 30，VP9 仍要带 -b:v 0', () => {
+    expect(buildVideoQualityArgs('libx265', 5000, 'high')).toEqual(['-crf', '22']);
+    expect(buildVideoQualityArgs('libvpx-vp9', 5000, 'small')).toEqual([
+      '-crf',
+      '30',
+      '-b:v',
+      '0',
+    ]);
+  });
+
+  it('码率模式按档位缩放：high 1.15×，small 0.45×，仍钳在 800k~8000k', () => {
+    expect(buildVideoQualityArgs('mpeg4', 2000, 'high')).toEqual(['-b:v', '2300k']);
+    expect(buildVideoQualityArgs('mpeg4', 2000, 'small')).toEqual(['-b:v', '900k']);
+    // 上限/下限与档位无关
+    expect(buildVideoQualityArgs('mpeg4', 100000, 'high')).toEqual(['-b:v', '8000k']);
+    expect(buildVideoQualityArgs('mpeg4', 100, 'small')).toEqual(['-b:v', '800k']);
+  });
+
+  it('任何档位下 SR 编码器都不会出现 -crf', () => {
+    for (const tier of ['high', 'standard', 'small'] as const) {
+      expect(buildVideoQualityArgs('wmv2', 3000, tier)).not.toContain('-crf');
+    }
+  });
+
+  it('音频码率三档递减，opus 比同档 AAC 更低', () => {
+    expect(audioBitrateFor('aac', 'high')).toBe('256k');
+    expect(audioBitrateFor('aac', 'small')).toBe('96k');
+    expect(audioBitrateFor('libopus', 'high')).toBe('160k');
+    expect(audioBitrateFor('libopus', 'small')).toBe('64k');
+  });
+
+  it('未知编码器在各档位都有兜底值', () => {
+    for (const tier of ['high', 'standard', 'small'] as const) {
+      expect(audioBitrateFor('something-new', tier)).toMatch(/^\d+k$/);
+    }
+  });
+});

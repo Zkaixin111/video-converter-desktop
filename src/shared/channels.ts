@@ -25,6 +25,10 @@ export const CH = {
   setSettings: 'app:setSettings',
   copyText: 'app:copyText',
   windowControl: 'window:control',
+
+  historyList: 'history:list',
+  historyRemove: 'history:remove',
+  historyClear: 'history:clear',
 } as const;
 
 /** 推送型事件 */

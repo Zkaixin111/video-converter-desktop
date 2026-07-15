@@ -1,9 +1,11 @@
 /**
  * 参数预设页（原型 #page-presets）。
  *
- * 8 个容器 × 3 档质量。**这一页的选择在 MVP 不参与转换**，
- * 只用 electron-store 持久化；页面顶部加了灰色提示条如实告知，
- * 底部「精细调节」按原型锁定并标【待后续迭代】。
+ * 8 个容器 × 3 档质量，P1 起**真实参与编码**：
+ * 档位 → CRF / 目标码率 / 音频码率 的映射在 shared/containers.ts，
+ * 由 planner 消费。直通（只换封装）不经过编码器，所以档位对它是空操作，
+ * 页面顶部把这一点如实写出来，避免「选了体积优先但文件没变小」被当成 bug。
+ * 底部「精细调节」仍按原型锁定。
  */
 import type { ReactElement } from 'react';
 import { CONTAINERS, CONTAINER_ORDER } from '../../../shared/containers';
@@ -35,7 +37,9 @@ export function PresetsPage(): ReactElement {
 
       <div className="notice">
         <Icon name="i-info" />
-        <div>该设置暂未接入转换流程，将在 P1 版本生效；当前转换使用固定的兼容性优先参数。</div>
+        <div>
+          档位已即时生效：需要重新压缩时决定画质与体积。无损直通（只换封装）不经过编码器，不受档位影响。
+        </div>
       </div>
 
       <div>
