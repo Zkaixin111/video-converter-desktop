@@ -38,8 +38,12 @@ export default defineConfig(({ command }) => ({
         // 窗口标题变成 "Error"、`pnpm dev` 直接失败、主进程一行日志都没有。
         // 这里显式把 cwd 指回项目根。
         onstart({ startup }) {
-          // 需要远程调试（CDP 截图 / 驱动界面）时，在这里临时加 --remote-debugging-port=9222
-          startup(['.', '--no-sandbox'], { cwd: projectRoot })
+          // 需要远程调试（CDP 截图 / 驱动界面）时用环境变量开启，脚本见 scripts/cdp-*.mjs：
+          //   CDP_PORT=9222 pnpm dev
+          // 走环境变量而不是临时改代码，是为了让截图脚本可复现、也避免忘记还原。
+          const flags = ['.', '--no-sandbox'];
+          if (process.env.CDP_PORT) flags.push(`--remote-debugging-port=${process.env.CDP_PORT}`);
+          startup(flags, { cwd: projectRoot })
         },
         vite: {
           build: {

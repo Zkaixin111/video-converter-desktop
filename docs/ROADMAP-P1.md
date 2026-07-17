@@ -30,7 +30,7 @@ MVP 已经跑通「选文件 → 判定 → 转码 → 校验」主链路，因�
 |---|---|---|---|---|---|
 | A | **参数预设真正生效** | P1-03 | 高 | 低 | `已实现` |
 | B | **转换历史** | P1-02 | 中高 | 低 | `已实现` |
-| C | **批量队列** | P1-01 | 最高 | 中高 | `待设计确认`（见 §5） |
+| C | **批量队列** | P1-01 | 最高 | 中高 | `已实现`（见 §5） |
 | D | 字幕 / 多音轨保留 | P1-05 | 中 | 中 | `排队` |
 | E | 输出质量校验（SSIM 抽样） | P1-06 | 中 | 中 | `排队` |
 | F | 分辨率缩放 / 裁剪 | P1-07 | 中 | 中 | `排队` |
@@ -44,7 +44,8 @@ MVP 已经跑通「选文件 → 判定 → 转码 → 校验」主链路，因�
 
 **为什么 C 不排第一**：批量队列价值最高，但它必须改 `JobManager` 的调度模型与
 转换页的交互（原型只有单任务行），属于「需要先定交互再写代码」的类别。
-在交互定清楚之前动手，返工成本远高于先做 A/B。
+在交互定清楚之前动手，返工成本远高于先做 A/B。C 的交互规格在 A/B 落地后由产品侧给出
+（见 §5），本轮一并实现。
 
 ---
 
@@ -127,43 +128,127 @@ interface HistoryEntry {
 
 ---
 
-## 4. 兼容性约定（A / B 共同遵守）
+## 4. 兼容性约定（A / B / C 共同遵守）
 
-1. **不改默认行为**：`preset` 缺省 = `standard`；历史模块独立于转换链路，写失败只记日志。
+1. **不改默认行为**：`preset` 缺省 = `standard`；历史模块独立于转换链路，写失败只记日志；
+   队列默认「共用全局参数」+「失败后继续」，与 MVP 的「选一个文件转一次」体验一致。
 2. **不改既有 IPC 语义**：`convert:preview` / `convert:start` 只**新增可选参数**，
-   旧调用方（含未来脚本）不传也能工作。
+   旧调用方（含未来脚本）不传也能工作；`convert:start` 内部改为单条入队，返回值形状不变。
 3. **不改原型布局**：新增内容只填充原型已有的空位（预设页提示条、队列页最近记录区），
    不新增页面、不改动既有区块的层级与尺寸。
-4. **测试先行**：所有新的纯逻辑（档位映射、历史存取）先进 `tests/unit`，
+4. **测试先行**：所有新的纯逻辑（档位映射、历史存取、参数解析）先进 `tests/unit`，
    涉及 ffmpeg 的行为靠现有 `tests/regression` 兜底。
+5. **并发固定为 1**：队列只负责排队，不改变「同一时刻一个 ffmpeg」这条 MVP 前提；
+   并发数调节留到后续版本（设置页如实标注）。
 
 ---
 
-## 5. C · 批量队列：待你确认的三件事
+## 5. C · 批量队列 `已实现`
 
-批量队列的实现前提是先把交互定下来，以下三点会让代码结构完全不同：
+交互规格由产品侧在 A/B 落地后确认（三条），实现严格按规格落地：
 
-1. **入口**：是「转换页选一个文件 + 加入队列」逐个添加，还是「拖入多个文件一次性入队」？
-   原型写的是「一次一个文件」，两种做法都要改文案。
-2. **目标格式**：整批共用一个格式（一次选择），还是每个任务各带格式？
-   共用实现简单、符合「批量」心智；各带则队列行要能显示不同格式。
-3. **失败处理**：一个任务失败后，队列是「继续后面的」还是「暂停等用户处理」？
+### 5.1 三条规格与落点
 
-确认后建议的实现路径（不改判定层）：
-- `JobManager` 从「单 current」改为 `pending[] + active`，并发固定为 1；
-- `EV.state` 已带 `jobId`，渲染层按 id 维护 `Map`，转换页只认自己那个 jobId；
-- 历史表与队列表共用一个 `JobSnapshot` 形状，B 的存储层可原样复用。
+| 规格 | 实现落点 |
+|---|---|
+| **文件入队**：点击选择单个文件添加 + 拖拽多个文件批量入队 | 转换页「选择文件 → 开始转换」= 入队 1 条；拖拽（转换页空态 / 队列页）与队列页「添加文件」（多选对话框）走 `addPaths` 批量入队 |
+| **参数模式可切换**：共用全局参数（默认）/ 单任务独立参数 | `Settings.queueMode`；`resolveTaskParams` 决定 `custom > 全局` 的优先级；队列卡片用 `chip-custom` / `chip-global` 标出来源 |
+| **切换模式只影响后续新增任务** | 模式只在**入队时**读取一次，任务把自己的参数固化在 `custom` 里；切换模式不改已存在任务 |
+| **失败策略二选一**（设置页） | `Settings.failurePolicy = 'continue' \| 'pause'`，在**失败那一刻**读取（用户中途改设置也生效） |
+| **失败任务标红 + 记日志 + 可重试 / 删除** | `.is-failed` 红卡 + 错误码与原文进 `logger.warn('job failed', …)`；`queue:retry` / `queue:remove` 单独操作 |
+
+### 5.2 范围
+- `JobManager` 从「单 current」改为 `entries[] + activeId`，**并发固定为 1**。
+- 队列条目携带自己的 `{target, preset, custom, outputPath}`；参数解析只在主进程做一次
+  （`ipc/queue.ts` 是唯一解析点），避免前后端各算一套。
+- 转换页仍是单任务视图，只认自己那个 `jobId`（队列里有别人的任务时进度不会串）。
+- 不做：暂停后自动恢复上一次队列（重启不持久化）、拖拽排序、并发数调节、失败记录进历史。
+
+### 5.3 输入输出
+| 项 | 内容 |
+|---|---|
+| 输入（渲染层） | `EnqueueItemInput[]`：`{ meta, globalTarget?, custom: TaskParams \| null }` + `outputDir` |
+| 内部解析 | `resolveTaskParams({ custom, globalTarget, presets })` → `{ target, preset, custom }` |
+| 输出 | `QueueSnapshot { items, activeId, paused, pausedReason, mode, policy }` |
+| 事件 | `queue:changed`（整份快照）、`job:progress` / `job:state`（带 `jobId`，渲染层按 id 过滤） |
+| IPC | `queue:enqueue` / `queue:list` / `queue:update` / `queue:cancel` / `queue:remove` / `queue:retry` / `queue:resume` |
+
+```ts
+interface QueueItem {
+  jobId: string;
+  fileName: string; sourcePath: string; outputPath: string;
+  target: ContainerKey; preset: PresetTier;
+  custom: TaskParams | null;        // 非空 = 该任务自带参数，优先级高于全局
+  status: JobStatus;                // 新增 'pending'（已入队待开始）
+  mode: ConversionMode | null;
+  sourceSizeBytes: number;
+  progress?: ProgressPayload; result?: JobResult; error?: JobError;
+  createdAt: number;
+}
+```
+
+### 5.4 实现要点（四条容易踩的）
+1. **入队即预定输出路径**：`reserved: Set<string>`（小写归一化）参与 `resolveOutputPath`
+   的存在性判断，否则同一源文件的两个任务会算出同一个文件名，后一个覆盖前一个。
+2. **终态处理分流**：`done` / `cancelled` 立刻移出队列（成功结果进历史）；`error`
+   **留在队列里**标红，供重试或删除——这也是「失败任务不静默消失」的实现。
+3. **暂停解除有三条路径**：手动「继续队列」、删掉最后一条失败任务、对失败任务重试。
+4. **jobId 必须唯一贯穿**：`ConversionJob` 由队列传入 `jobId`（而不是自己 `randomUUID`），
+   `progress / state / result` 三个事件都用它。这一条是被集成测试抓出来的真实缺陷
+   （见 §6「本轮修掉的问题」）。
+
+### 5.5 验收标准
+1. 拖入 3 个文件 → 队列 3 条，单并发顺序执行，完成顺序与入队顺序一致。
+2. 同一源文件入队两次 → 两个不同的输出路径（第二个自动加序号）。
+3. 共用全局模式：条目 `custom === null`，卡片显示「跟随全局」；
+   单任务模式：条目带 `custom`，卡片显示「自定义」，可展开编辑器单独改格式与档位。
+4. 切换模式后，已入队任务的 `custom` 不变（只有新增任务受影响）。
+5. 编辑任务格式 → `target` / `preset` / `outputPath` 扩展名三者同步变化。
+6. 策略 A（继续）：一条失败后其余任务照常跑完，失败任务留在队列里。
+7. 策略 B（暂停）：一条失败后队列停住（`paused=true, pausedReason='failure'`），
+   后续任务保持 `pending`；「继续队列」或删掉失败任务后自动恢复。
+8. 失败任务可单独重试（`jobId` 不变、源文件恢复后能真的转完）与单独删除。
+9. 失败原因用中文展示，原始 errno 只进日志与「复制诊断信息」。
+10. 既有 32 组合回归、MVP 单任务流程、`standard` 档位参数逐字节一致，全部不回归。
 
 ---
 
 ## 6. 本轮实现清单
 
+### A · 参数预设
 - [x] `containers.ts`：档位映射表 + `buildVideoQualityArgs/audioBitrateFor` 增加 `tier`
 - [x] `planner.ts`：`options.preset` 贯通，`PlanResult.preset` 回填
 - [x] IPC / preload：`preview` / `start` 支持 `preset`
 - [x] 渲染层：预设改动后即时重算判定；预设置为 `standard` 以外的档位时，判定条补充一行说明
 - [x] 预设页：去掉「暂未接入」提示，改为「立即生效」+ 直通场景说明
+
+### B · 转换历史
 - [x] 历史：`core/job/history.ts`（可注入路径、可单测）+ `main/history.ts` 单例 + IPC
 - [x] 队列页：最近记录真实列表 + 清空
-- [x] 测试：档位映射单测、planner 档位单测、历史存取单测
+
+### C · 批量队列
+- [x] `shared/queue.ts`：参数解析与状态判定（纯函数，主进程与渲染进程共用）
+- [x] `shared/types.ts`：`QueueItem / QueueSnapshot / EnqueueItemInput / TaskParams`、`JobStatus` 新增 `pending`
+- [x] `core/job/JobManager.ts`：队列 + 输出路径预定 + 编辑 / 重试 / 移除 / 继续 + 失败暂停
+- [x] `ipc/queue.ts`：唯一参数解析点 + 事件转发 + 失败日志
+- [x] `ipc/convert.ts`：`convert:start` 改为单条入队，链路只留一条
+- [x] `selectVideo` 支持多选（队列页「添加文件」）
+- [x] 渲染层：`myJobId` 过滤、`addPaths` 分流（1 个走选择格式 / 多个直接入队）、`pickFiles`
+- [x] 队列页：排队 / 运行 / 失败三种行、参数来源标签、内联编辑器、暂停提示条
+- [x] 设置页：输出参数模式 + 失败策略两个分段控件
+- [x] `toAppError`：原生 errno → 中文文案（失败卡片不再出现 `EEXIST: ...`）
+
+### 测试与验证
+- [x] 单测：档位映射、planner 档位、历史存取、`resolveTaskParams` 优先级、`toAppError` 翻译
+- [x] 集成：`tests/integration/queue.test.ts`（FIFO、路径预定、两种失败策略、重试、单任务编辑）
 - [x] 文档：README 能力表 / BACKLOG 状态 / 本文件
+- [x] 界面验证：`scripts/cdp-queue-check.mjs`（24 条断言 + 4 张截图，真实转码驱动）
+
+### 本轮修掉的问题
+
+| 问题 | 表现 | 根因 | 修法 |
+|---|---|---|---|
+| jobId 双份 | 转换页进度条不动、终态被当成别人的任务忽略 | `ConversionJob` 自己 `randomUUID()`，与队列条目 id 不同 | 队列把自己的 `jobId` 传进构造参数，事件统一用它 |
+| errno 外泄 | 失败卡片显示 `EEXIST: file already exists, mkdir 'C:\…'` | `toAppError` 用原生 `err.message` 当用户文案 | 增加 errno → `ErrorCode` 映射，原文转存 `detail` |
+| 历史偶发写失败 | 高并发下 `rename` 抛 EPERM/EBUSY，该条历史丢失 | Windows 杀软 / 索引服务短暂占用目标文件 | 原子写加重试（最多 3 次退避），仍失败才记警告 |
+| 侧边栏「迭代」徽标 | 队列页明明已经实现，导航仍写着「迭代」 | 原型遗留标记 | 去掉徽标；拖拽区文案「一次一个文件」同步改为可多选 |

@@ -44,18 +44,29 @@ export function registerShellIpc(getWindow: () => BrowserWindow | null): void {
     }),
   );
 
-  ipcMain.handle(CH.selectVideo, () =>
-    wrap<{ path: string | null }>(async () => {
+  /**
+   * 选视频。`multi` 决定是否允许多选（队列页的「添加文件」用多选）。
+   *
+   * 返回值同时给 `path`（首个，兼容 MVP 的单选调用方）与 `paths`（全部），
+   * 这样老的 `const { path } = await selectVideo()` 完全不用改。
+   */
+  ipcMain.handle(CH.selectVideo, (_e, payload: unknown) =>
+    wrap<{ path: string | null; paths: string[] }>(async () => {
       const win = getWindow();
+      const multi = Boolean((payload as { multi?: boolean } | undefined)?.multi);
+      const properties: Array<'openFile' | 'multiSelections'> = multi
+        ? ['openFile', 'multiSelections']
+        : ['openFile'];
       const options = {
-        title: '选择视频文件',
-        properties: ['openFile' as const],
+        title: multi ? '选择视频文件（可多选）' : '选择视频文件',
+        properties,
         filters: VIDEO_FILTERS,
       };
       const res = win
         ? await dialog.showOpenDialog(win, options)
         : await dialog.showOpenDialog(options);
-      return { path: res.canceled || res.filePaths.length === 0 ? null : res.filePaths[0] };
+      const paths = res.canceled ? [] : res.filePaths;
+      return { path: paths[0] ?? null, paths };
     }),
   );
 

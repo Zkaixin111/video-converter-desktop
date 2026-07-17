@@ -13,13 +13,13 @@ interface NavItem {
   page: Page;
   icon: IconName;
   label: string;
-  /** 「迭代」徽标：功能属于后续版本 */
+  /** 「迭代」徽标：功能属于后续版本。P1 起任务队列已实现，不再打这个标 */
   iter?: boolean;
 }
 
 const MAIN: NavItem[] = [{ page: 'convert', icon: 'i-convert', label: '转换' }];
 
-const WORKSPACE: NavItem[] = [{ page: 'queue', icon: 'i-queue', label: '任务队列', iter: true }];
+const WORKSPACE: NavItem[] = [{ page: 'queue', icon: 'i-queue', label: '任务队列' }];
 
 const CONFIG: NavItem[] = [
   { page: 'presets', icon: 'i-preset', label: '参数预设' },

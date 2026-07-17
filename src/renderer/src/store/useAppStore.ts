@@ -20,7 +20,9 @@ import type {
   PlanResult,
   PresetTier,
   ProgressPayload,
+  QueueSnapshot,
   Settings,
+  TaskParams,
 } from '../../../shared/types';
 import { call, detailOf, messageOf } from '../lib/api';
 
@@ -56,6 +58,8 @@ interface AppState {
   error: JobError | null;
   /** 探测中 / 启动中，用于禁用按钮防连点 */
   busy: boolean;
+  /** 转换页自己那个任务（队列里可能还有别人）：状态事件按它过滤 */
+  myJobId: string | null;
 
   /* ── 应用级 ───────────────────────────── */
   settings: Settings | null;
@@ -63,13 +67,19 @@ interface AppState {
   toasts: ToastItem[];
   /** 转换历史（主进程持久化，最新在前） */
   history: HistoryEntry[];
+  /** 队列快照（主进程推送，含排队中的任务与暂停状态） */
+  queue: QueueSnapshot | null;
 
   /* ── 动作 ─────────────────────────────── */
   init: () => Promise<void>;
   recheckCaps: () => Promise<void>;
   setPage: (page: Page) => void;
   pickFile: () => Promise<void>;
+  /** 队列页的「添加文件」：多选对话框，选完直接入队（1 个也走这条路） */
+  pickFiles: () => Promise<void>;
   loadFromPath: (path: string) => Promise<void>;
+  /** 拖拽/多选入口：1 个文件走「选择格式」流程，多个直接入队 */
+  addPaths: (paths: string[], forceQueue?: boolean) => Promise<void>;
   setTarget: (target: ContainerKey) => Promise<void>;
   chooseOutputDir: () => Promise<void>;
   start: () => Promise<void>;
@@ -80,6 +90,14 @@ interface AppState {
   loadHistory: () => Promise<void>;
   removeHistory: (id: string) => Promise<void>;
   clearHistory: () => Promise<void>;
+  /* 队列 */
+  refreshQueue: () => Promise<void>;
+  /** 返回是否成功：编辑器据此决定要不要关闭面板 */
+  updateQueueItem: (jobId: string, custom: TaskParams | null) => Promise<boolean>;
+  cancelQueueItem: (jobId: string) => Promise<void>;
+  removeQueueItem: (jobId: string) => Promise<void>;
+  retryQueueItem: (jobId: string) => Promise<void>;
+  resumeQueue: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   toast: (message: string, type?: ToastType) => void;
   dismissToast: (id: number) => void;
@@ -143,11 +161,13 @@ export const useAppStore = create<AppState>((set, get) => ({
   result: null,
   error: null,
   busy: false,
+  myJobId: null,
 
   settings: null,
   caps: null,
   toasts: [],
   history: [],
+  queue: null,
 
   /** 启动一次性初始化：读自检结果与设置、订阅主进程事件 */
   init: async () => {
@@ -175,17 +195,22 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     // 历史是独立文件，读失败也只是空列表（主进程已兜底），不阻塞启动
     void get().loadHistory();
+    void get().refreshQueue();
 
-    // 进度与终态由主进程推送。这里只订阅一次，组件卸载不取消（应用级订阅）
-    window.api.onProgress((progress) => set({ progress }));
+    // 队列结构变化由主进程整体推送：入队、状态流转、暂停/继续都用这一条
+    window.api.onQueue((snapshot) => set({ queue: snapshot }));
+
+    // 进度只认「转换页自己那个任务」：队列里别的任务的进度不该改转换页的进度条
+    window.api.onProgress((progress) => {
+      if (progress.jobId !== get().myJobId) return;
+      set({ progress });
+    });
 
     window.api.onState((snapshot: JobSnapshot) => {
-      // 终态事件可能是「已被放弃的任务」发来的：用户点了「更换」清空界面，
-      // 后台的 ffmpeg 还在收尾。此时若照单全收，界面会被一个 meta 为 null 的
-      // done/error 状态带走，变成白屏。所以没有当前文件时直接丢弃终态事件。
-      if (!get().meta && snapshot.status !== 'preparing' && snapshot.status !== 'running') {
-        return;
-      }
+      const { myJobId, meta } = get();
+      // 终态事件可能来自队列里别的任务，也可能来自用户已经「更换」掉的旧任务：
+      // 只要不是当前转换页自己的 jobId，就与这一页无关。
+      if (!myJobId || snapshot.jobId !== myJobId || !meta) return;
 
       switch (snapshot.status) {
         case 'done': {
@@ -199,6 +224,7 @@ export const useAppStore = create<AppState>((set, get) => ({
           get().toast('转换完成', 'success');
           // 主进程在终态回调里落了历史，这里刷新列表
           void get().loadHistory();
+          void get().refreshQueue();
           // 「完成后打开文件夹」是设置页真实生效的开关之一
           if (get().settings?.openFolderAfterDone && snapshot.result) {
             void window.api.openFolder(snapshot.result.outputPath);
@@ -243,6 +269,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (stage === 'running' && page !== 'convert') {
       get().toast('转换正在后台进行，可回到转换页查看进度', 'info');
     }
+    if (page === 'queue') void get().refreshQueue();
     set({ page });
   },
 
@@ -252,6 +279,24 @@ export const useAppStore = create<AppState>((set, get) => ({
       const { path } = await call(window.api.selectVideo());
       if (!path) return;
       await get().loadFromPath(path);
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  /**
+   * 多选入口（队列页「添加文件」、空态「添加文件」）。
+   *
+   * 与 pickFile 的区别：这里**不**弹格式选择，选完就按当前参数入队。
+   * 队列页要的是「往里塞活」，不是「一次只调一个文件」。
+   */
+  pickFiles: async () => {
+    if (get().busy) return;
+    try {
+      const { paths } = await call(window.api.selectVideo(true));
+      if (paths.length === 0) return;
+      // forceQueue：即使只选了 1 个、即使转换页是空态，也要直接入队而不是载入转换页
+      await get().addPaths(paths, true);
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }
@@ -296,8 +341,67 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
-  setTarget: async (target) => {
-    const { meta, target: current, outputDir, settings } = get();
+  /**
+   * 拖拽 / 多选入口。
+   *
+   * 取舍：
+   *   · 只有 1 个文件且界面是空的 → 走原来的「选择格式」流程（保留 MVP 体验）
+   *   · 其余情况 → 一律按当前面板参数直接入队，并跳到队列页
+   *     （逐个弹格式选择对批量场景是灾难）
+   */
+  addPaths: async (paths, forceQueue = false) => {
+    if (get().busy) return;
+
+    const videos = paths.filter(isVideoPath);
+    const rejected = paths.length - videos.length;
+    if (videos.length === 0) {
+      get().toast('拖入的不是视频文件，换一个试试', 'warning');
+      return;
+    }
+
+    const { settings, target, outputDir, stage } = get();
+    if (!forceQueue && videos.length === 1 && stage === 'empty') {
+      await get().loadFromPath(videos[0]);
+      return;
+    }
+
+    // 单任务独立参数模式：新任务自带当前面板的格式与档位（之后可单独编辑）
+    const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
+    const custom: TaskParams | null = perTask
+      ? { target, preset: presetFor(settings, target) }
+      : null;
+
+    set({ busy: true });
+    try {
+      const inputs = [];
+      for (const path of videos) {
+        try {
+          const meta = await call(window.api.probe(path));
+          inputs.push({ meta, globalTarget: target, custom });
+        } catch (err) {
+          get().toast(`${path.split(/[\\/]/).pop()} 读取失败：${messageOf(err)}`, 'warning');
+        }
+      }
+      if (inputs.length === 0) {
+        set({ busy: false });
+        return;
+      }
+
+      const items = await call(window.api.enqueue(inputs, outputDir));
+      set({ busy: false });
+      void get().refreshQueue();
+      get().toast(
+        `已加入队列：${items.length} 个文件${rejected > 0 ? `（跳过 ${rejected} 个非视频）` : ''}`,
+        'success',
+      );
+      set({ page: 'queue' });
+    } catch (err) {
+      set({ busy: false });
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  setTarget: async (target) => {    const { meta, target: current, outputDir, settings } = get();
     if (current === target) return;
     set({ target });
 
@@ -338,18 +442,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     const { meta, target, outputDir, stage, busy, settings } = get();
     if (!meta || stage !== 'setup' || busy) return;
 
+    // 单任务独立参数模式：把当前面板的格式与档位固化到任务上（之后可在队列里单独改）
+    const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
+    const custom: TaskParams | null = perTask
+      ? { target, preset: presetFor(settings, target) }
+      : null;
+
     set({ busy: true, progress: null, result: null, error: null });
     try {
-      const started = await call(
-        window.api.start(meta, target, outputDir, presetFor(settings, target)),
+      const [item] = await call(
+        window.api.enqueue([{ meta, globalTarget: target, custom }], outputDir),
       );
-      // 主进程可能因为同名冲突换了个文件名，以它返回的为准
+      if (!item) throw new Error('入队失败');
       set({
         stage: 'running',
-        outputPath: started.outputPath,
-        plan: started.plan,
+        myJobId: item.jobId,
+        // 主进程可能因为同名冲突换了文件名，以它返回的为准
+        outputPath: item.outputPath,
         busy: false,
       });
+      void get().refreshQueue();
     } catch (err) {
       set({ busy: false });
       get().toast(messageOf(err), 'error');
@@ -358,7 +470,8 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   cancel: async () => {
     try {
-      await call(window.api.cancel());
+      const jobId = get().myJobId ?? undefined;
+      await call(window.api.cancelQueueItem(jobId));
       // 真正的状态切换等主进程推 cancelled，避免 UI 先跑一步造成状态撕裂
     } catch (err) {
       get().toast(messageOf(err), 'error');
@@ -366,10 +479,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   reset: () => {
-    const { target, stage } = get();
+    const { target, stage, myJobId } = get();
     // 转换中点「更换」：先把后台任务停掉再把界面清空，
     // 否则 ffmpeg 会在用户不知情的情况下继续跑完，还往磁盘写一个文件。
-    if (stage === 'running') void window.api.cancel();
+    if (stage === 'running' && myJobId) void window.api.cancelQueueItem(myJobId);
 
     set({
       stage: 'empty',
@@ -383,6 +496,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       result: null,
       error: null,
       busy: false,
+      myJobId: null,
       target,
     });
   },
@@ -439,6 +553,63 @@ export const useAppStore = create<AppState>((set, get) => ({
       await call(window.api.clearHistory());
       set({ history: [] });
       get().toast('已清空转换历史', 'success');
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  /* ── 队列 ─────────────────────────────── */
+  refreshQueue: async () => {
+    try {
+      set({ queue: await call(window.api.listQueue()) });
+    } catch {
+      /* 队列读不到不影响转换，主进程还会继续推事件 */
+    }
+  },
+
+  updateQueueItem: async (jobId, custom) => {
+    try {
+      // 全局 target 一起带上：custom 为 null 时主进程要靠它回落（例如「改为跟随全局」）
+      const { target } = get();
+      await call(window.api.updateQueueItem(jobId, custom, target));
+      void get().refreshQueue();
+      get().toast(custom ? '任务参数已更新' : '该任务已改为跟随全局参数', 'success');
+      return true;
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+      return false;
+    }
+  },
+
+  cancelQueueItem: async (jobId) => {
+    try {
+      await call(window.api.cancelQueueItem(jobId));
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  removeQueueItem: async (jobId) => {
+    try {
+      set({ queue: await call(window.api.removeQueueItem(jobId)) });
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  retryQueueItem: async (jobId) => {
+    try {
+      set({ queue: await call(window.api.retryQueueItem(jobId)) });
+      get().toast('已重新加入队列', 'info');
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  resumeQueue: async () => {
+    try {
+      set({ queue: await call(window.api.resumeQueue()) });
+      get().toast('队列已继续', 'info');
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }

@@ -1219,6 +1219,203 @@ svg {
   gap: 8px;
 }
 
+/* ===========================================================================
+   批量队列（P1-01）
+   —— 一行任务 + 它展开的参数编辑器；失败标红、参数来源打标签
+   =========================================================================== */
+
+/* 外层只负责把「任务行」和「展开的编辑器」贴在一起 */
+.queue-item {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.queue-row.is-failed {
+  border-color: var(--danger-border);
+  background: var(--danger-bg);
+}
+
+/* 等待中的任务不需要额外视觉强调，靠右侧「第 N 位」说明顺序即可 */
+
+/* 文件名可能很长：只让它自己缩，别把格式标签挤没 */
+.queue-row .q-fname {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 参数来源 / 状态标签 */
+.chip {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 10px;
+  line-height: 15px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.chip-custom {
+  color: var(--primary-600);
+  background: var(--primary-50);
+  border-color: var(--primary-100);
+}
+.chip-global {
+  color: var(--text-tertiary);
+  background: var(--bg-subtle);
+  border-color: var(--border-default);
+}
+.chip-fail {
+  color: var(--danger);
+  background: var(--bg-surface);
+  border-color: var(--danger-border);
+}
+.chip-edit {
+  color: var(--primary-600);
+  background: var(--bg-surface);
+  border-color: var(--primary-100);
+}
+
+/* 失败原因：直接写在卡片里，不必让用户去翻日志 */
+.queue-row .q-error {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+.queue-row .q-error .q-hint {
+  color: var(--text-secondary);
+}
+
+.btn-text.is-danger {
+  color: var(--danger);
+}
+.btn-text.is-danger:hover:not(:disabled) {
+  background: var(--danger-bg);
+}
+
+/* 展开的参数编辑器 */
+.queue-edit {
+  padding: 12px 14px;
+  border: 1px solid var(--primary-100);
+  border-radius: var(--r-xl);
+  background: var(--primary-50);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.queue-edit .qe-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.queue-edit .qe-label {
+  flex: none;
+  width: 60px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+.queue-edit .qe-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.queue-edit .qe-spacer {
+  flex: 1;
+}
+
+/* 格式 chips：比转换页的 .fmt 卡片轻得多，这里只是「改一下」 */
+.fmt-mini {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.fmt-chip {
+  padding: 3px 10px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 12px;
+  transition:
+    border-color var(--t-fast) var(--ease),
+    color var(--t-fast) var(--ease),
+    background var(--t-fast) var(--ease);
+}
+.fmt-chip:hover {
+  border-color: var(--primary-400);
+  color: var(--text-primary);
+}
+.fmt-chip[aria-pressed='true'] {
+  border-color: var(--primary-500);
+  background: var(--primary-50);
+  color: var(--primary-600);
+  font-weight: 600;
+}
+
+/* 「失败即暂停」提示条 */
+.queue-paused {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  margin-bottom: 4px;
+  border: 1px solid var(--warn-border);
+  border-radius: var(--r-xl);
+  background: var(--warn-bg);
+}
+.queue-paused .qp-ico {
+  width: 28px;
+  height: 28px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bg-surface);
+  color: var(--warn);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.queue-paused .qp-ico svg {
+  width: 15px;
+  height: 15px;
+}
+.queue-paused .qp-body {
+  flex: 1;
+  min-width: 0;
+}
+.queue-paused .qp-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.queue-paused .qp-desc {
+  margin-top: 2px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+/* 「N 个任务」小角标 */
+.q-count {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* 页面标题右侧带操作按钮时的两栏布局 */
+.page-head.has-actions {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+.page-head.has-actions > div {
+  min-width: 0;
+}
+
 .empty-block {
   padding: 44px 24px;
   text-align: center;

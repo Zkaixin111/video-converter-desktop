@@ -102,10 +102,44 @@ export class AppError extends Error {
   }
 }
 
+/**
+ * Node 文件系统错误码 → 项目错误码。
+ *
+ * 为什么要在这一层统一翻译：任务失败时卡片上直接显示 message，
+ * 如果放过原始错误，用户会看到 `EEXIST: file already exists, mkdir 'C:\...'`
+ * 这种只有开发者能读的东西。原始信息不丢，转存进 detail（进「复制诊断信息」）。
+ */
+const FS_ERROR_MAP: Record<string, { code: ErrorCode; message?: string; hint?: string }> = {
+  ENOENT: { code: 'E_FILE_NOT_FOUND' },
+  EACCES: { code: 'E_PERMISSION' },
+  EPERM: { code: 'E_PERMISSION' },
+  EBUSY: { code: 'E_FILE_UNREADABLE' },
+  ENOSPC: { code: 'E_DISK_FULL' },
+  EEXIST: {
+    code: 'E_PERMISSION',
+    message: '无法写入输出位置：那里已经存在一个同名的文件或文件夹。',
+    hint: '换一个保存位置，或先处理掉同名文件再试。',
+  },
+  ENOTDIR: {
+    code: 'E_PERMISSION',
+    message: '输出位置不是一个文件夹，无法写入。',
+    hint: '换一个保存位置再试。',
+  },
+  EROFS: { code: 'E_PERMISSION', message: '输出位置是只读的，无法写入。' },
+};
+
 /** 把任意异常归一化成 AppError：IPC 边界上统一用它兜底 */
 export function toAppError(err: unknown): AppError {
   if (err instanceof AppError) return err;
   if (err instanceof Error) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const mapped = code ? FS_ERROR_MAP[code] : undefined;
+    if (mapped) {
+      return new AppError(mapped.code, mapped.message, {
+        hint: mapped.hint,
+        detail: `${code}: ${err.message}`,
+      });
+    }
     return new AppError('E_UNKNOWN', err.message, { detail: err.stack });
   }
   return new AppError('E_UNKNOWN', String(err));

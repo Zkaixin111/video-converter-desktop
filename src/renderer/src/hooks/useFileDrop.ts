@@ -16,7 +16,12 @@ export function useFileDrop(): boolean {
 
   useEffect(() => {
     const state = () => useAppStore.getState();
-    const isHot = () => state().page === 'convert' && state().stage === 'empty';
+    /**
+     * 高亮显示的条件：转换页空态，或队列页。
+     * 队列页永远可以接（批量入队），所以不分状态直接高亮。
+     */
+    const isHot = () =>
+      state().page === 'queue' || (state().page === 'convert' && state().stage === 'empty');
 
     const onDragEnter = (e: DragEvent): void => {
       if (!isHot()) return;
@@ -42,22 +47,20 @@ export function useFileDrop(): boolean {
       setDragging(false);
 
       const app = state();
-      if (app.page !== 'convert') return;
-      if (app.stage !== 'empty') {
-        app.toast('当前已有一个文件，请先点击「更换」', 'warning');
-        return;
-      }
+      if (app.page !== 'convert' && app.page !== 'queue') return;
 
-      const file = e.dataTransfer?.files?.[0];
-      if (!file) return;
+      const files = Array.from(e.dataTransfer?.files ?? []);
+      if (files.length === 0) return;
 
       // Electron 32+ 拿不到 File.path，必须走 preload 暴露的 webUtils 封装
-      const path = window.api.getPathForFile(file);
-      if (!path) {
-        app.toast('无法读取这个文件的路径，请改用「选择文件…」', 'warning');
+      const paths = files.map((f) => window.api.getPathForFile(f)).filter(Boolean);
+      if (paths.length === 0) {
+        app.toast('无法读取这些文件的路径，请改用「选择文件…」', 'warning');
         return;
       }
-      void app.loadFromPath(path);
+
+      // 1 个文件 → 选择格式；多个文件 → 直接按当前参数批量入队（store 里分流）
+      void app.addPaths(paths);
     };
 
     document.addEventListener('dragenter', onDragEnter);

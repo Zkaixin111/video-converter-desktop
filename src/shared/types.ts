@@ -69,7 +69,15 @@ export interface PlanResult {
   preset: PresetTier;
 }
 
-export type JobStatus = 'idle' | 'preparing' | 'running' | 'done' | 'cancelled' | 'error';
+export type JobStatus =
+  | 'idle'
+  /** 已入队，等待前面的任务 */
+  | 'pending'
+  | 'preparing'
+  | 'running'
+  | 'done'
+  | 'cancelled'
+  | 'error';
 
 export interface ProgressPayload {
   jobId: string;
@@ -106,10 +114,75 @@ export interface JobSnapshot {
   status: JobStatus;
   jobId?: string;
   fileName?: string;
+  /** 源文件路径：历史记录需要，失败诊断也要 */
+  sourcePath?: string;
   target?: ContainerKey;
   progress?: ProgressPayload;
   result?: JobResult;
   error?: JobError;
+}
+
+/**
+ * 输出参数模式（批量队列）。
+ *
+ * - `shared`   共用全局参数：新增任务不携带自定义参数，执行时按「全局面板」解析
+ * - `per-task` 单任务独立参数：任务携带 target + preset，可单独编辑
+ *
+ * 切换模式只影响**后续新增**的任务，已入队的任务参数不变。
+ */
+export type QueueMode = 'shared' | 'per-task';
+
+/** 任务失败后的队列行为 */
+export type FailurePolicy = 'continue' | 'pause';
+
+/** 任务自带参数（单任务独立参数模式）；null 表示跟随全局 */
+export interface TaskParams {
+  target: ContainerKey;
+  preset: PresetTier;
+}
+
+/** 队列里的一条任务（IPC 与界面共用的视图对象） */
+export interface QueueItem {
+  jobId: string;
+  fileName: string;
+  sourcePath: string;
+  outputPath: string;
+  /** 实际生效的目标格式（custom 优先，否则继承全局） */
+  target: ContainerKey;
+  /** 实际生效的画质档位（custom 优先，否则取全局该容器的档位） */
+  preset: PresetTier;
+  /** 非空 = 该任务自带参数，优先级高于全局 */
+  custom: TaskParams | null;
+  status: JobStatus;
+  mode: ConversionMode | null;
+  sourceSizeBytes: number;
+  progress?: ProgressPayload;
+  result?: JobResult;
+  error?: JobError;
+  createdAt: number;
+}
+
+export interface QueueSnapshot {
+  items: QueueItem[];
+  activeId: string | null;
+  paused: boolean;
+  /** 暂停原因：目前只有「失败即暂停」一种 */
+  pausedReason: 'failure' | null;
+  mode: QueueMode;
+  policy: FailurePolicy;
+}
+
+/**
+ * 入队请求的单条描述（渲染层 → 主进程）。
+ *
+ * 只上报「任务自带参数」与「全局面板选中的格式」，
+ * 最终 target/preset 由主进程按 resolveTaskParams 统一解析。
+ */
+export interface EnqueueItemInput {
+  meta: MediaMeta;
+  /** 全局面板当前选中的格式；custom 为 null 时生效 */
+  globalTarget?: ContainerKey;
+  custom: TaskParams | null;
 }
 
 /**
@@ -168,6 +241,10 @@ export interface Settings {
    * 直通（copy）不改编码参数，因此档位对它是空操作。
    */
   presets: Record<ContainerKey, PresetTier>;
+  /** 批量队列的输出参数模式；切换只影响后续新增任务 */
+  queueMode: QueueMode;
+  /** 任务失败后的队列行为 */
+  failurePolicy: FailurePolicy;
 }
 
 /** 「复制诊断信息」的内容载体，由主进程拼装 */

@@ -1,6 +1,6 @@
-/** convert:* —— 规划、启动、取消、状态 */
-import { BrowserWindow, ipcMain } from 'electron';
-import { CH, EV } from '../../shared/channels';
+/** convert:* —— 规划、启动（单任务入队）、取消、状态 */
+import { ipcMain } from 'electron';
+import { CH } from '../../shared/channels';
 import { AppError } from '../../shared/errors';
 import { CONTAINER_ORDER, isContainerKey, isPresetTier } from '../../shared/containers';
 import type {
@@ -13,10 +13,9 @@ import type {
 import { planConversion } from '../core/ffmpeg/planner';
 import { resolveOutputPath } from '../core/fs/outputPath';
 import { jobManager } from '../core/job/JobManager';
-import { historyStore } from '../history';
 import { logger } from '../logger';
 import { getSettings } from '../store';
-import { requireObject, requireString, wrap } from './wrap';
+import { requireAbsPath, requireObject, requireString, wrap } from './wrap';
 
 function requireTarget(v: unknown): ContainerKey {
   requireString(v, 'target');
@@ -39,14 +38,14 @@ function resolvePreset(v: unknown, target: ContainerKey): PresetTier {
 
 function requireMeta(v: unknown): MediaMeta {
   const meta = requireObject(v, 'meta') as unknown as MediaMeta;
-  requireString(meta.path, 'meta.path');
+  requireAbsPath(meta.path, 'meta.path');
   if (!meta.video) {
     throw new AppError('E_NO_VIDEO_STREAM', '这个文件里没有视频画面，不能转换成视频格式。');
   }
   return meta;
 }
 
-export function registerConvertIpc(getWindow: () => BrowserWindow | null): void {
+export function registerConvertIpc(): void {
   /** 纯计算：渲染层切换格式时高频调用，不能碰磁盘 */
   ipcMain.handle(CH.plan, (_e, payload: unknown) =>
     wrap<PlanResult>(() => {
@@ -75,50 +74,26 @@ export function registerConvertIpc(getWindow: () => BrowserWindow | null): void 
     }),
   );
 
+  /**
+   * 兼容入口：单任务入队。
+   *
+   * 批量走 queue:enqueue；这里保留是因为「转换页点开始」在语义上就是一次入队，
+   * 让渲染层复用同一条路径（少一条链路，就少一处状态不一致的机会）。
+   */
   ipcMain.handle(CH.start, (_e, payload: unknown) =>
     wrap<{ jobId: string; plan: PlanResult; outputPath: string }>(() => {
       const { meta, target, outputDir, preset } = requireObject(payload, 'payload');
       const m = requireMeta(meta);
       const t = requireTarget(target);
-      const win = getWindow();
+      const p = resolvePreset(preset, t);
 
-      const started = jobManager.start({
-        meta: m,
-        target: t,
-        preset: resolvePreset(preset, t),
-        outputDir: typeof outputDir === 'string' && outputDir ? outputDir : null,
-        onProgress: (progress) => {
-          if (win && !win.isDestroyed()) win.webContents.send(EV.progress, progress);
-        },
-        onState: (snapshot) => {
-          if (win && !win.isDestroyed()) win.webContents.send(EV.state, snapshot);
-          logger.info('job state', snapshot.status, snapshot.jobId ?? '');
-          // 只有成功才进历史：失败/取消会在列表里变成噪音
-          if (snapshot.status === 'done' && snapshot.result) {
-            try {
-              historyStore().add({
-                id: snapshot.result.jobId,
-                fileName: m.fileName,
-                sourcePath: m.path,
-                outputPath: snapshot.result.outputPath,
-                target: t,
-                mode: snapshot.result.mode,
-                sourceSizeBytes: snapshot.result.sourceSizeBytes,
-                outputSizeBytes: snapshot.result.outputSizeBytes,
-                elapsedMs: snapshot.result.elapsedMs,
-                verified: snapshot.result.verified,
-                finishedAt: Date.now(),
-              });
-            } catch (err) {
-              // 历史写失败不能影响转换结果，只留日志
-              logger.warn('history append failed', String(err));
-            }
-          }
-        },
-      });
+      const [first] = jobManager.enqueue([
+        { meta: m, target: t, preset: p, custom: null, outputDir: typeof outputDir === 'string' && outputDir ? outputDir : null },
+      ]);
+      if (!first) throw new AppError('E_UNKNOWN', '入队失败，请重试。');
 
-      logger.info('job start', m.fileName, '→', t, 'mode', started.plan.mode);
-      return started;
+      logger.info('job enqueue', m.fileName, '→', t, 'mode', first.plan.mode);
+      return { jobId: first.item.jobId, plan: first.plan, outputPath: first.item.outputPath };
     }),
   );
 

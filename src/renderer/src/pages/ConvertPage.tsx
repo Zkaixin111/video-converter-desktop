@@ -63,6 +63,8 @@ export function ConvertPage(): ReactElement {
   const error = useAppStore((s) => s.error);
   const busy = useAppStore((s) => s.busy);
   const caps = useAppStore((s) => s.caps);
+  const myJobId = useAppStore((s) => s.myJobId);
+  const queue = useAppStore((s) => s.queue);
 
   const pickFile = useAppStore((s) => s.pickFile);
   const setTarget = useAppStore((s) => s.setTarget);
@@ -76,6 +78,10 @@ export function ConvertPage(): ReactElement {
 
   const engineMissing = caps ? !caps.ffmpeg.ok : false;
   const empty = stage === 'empty' || stage === 'probing';
+  // 队列里可能还有别的任务：只认自己这个 jobId 是否已经轮到
+  const myQueued = myJobId
+    ? queue?.items.find((i) => i.jobId === myJobId)?.status === 'pending'
+    : false;
 
   return (
     <section className="page" aria-label="转换">
@@ -128,6 +134,7 @@ export function ConvertPage(): ReactElement {
               fileName={meta.fileName}
               outputPath={outputPath}
               progress={progress}
+              queued={myQueued}
               onCancel={() => void cancel()}
             />
           ) : null}

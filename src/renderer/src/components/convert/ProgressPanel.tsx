@@ -18,6 +18,8 @@ interface ProgressPanelProps {
   fileName: string;
   outputPath: string;
   progress: ProgressPayload | null;
+  /** 已入队但前面还有任务在跑 */
+  queued?: boolean;
   onCancel: () => void;
 }
 
@@ -26,9 +28,10 @@ export function ProgressPanel({
   fileName,
   outputPath,
   progress,
+  queued = false,
   onCancel,
 }: ProgressPanelProps): ReactElement {
-  const indeterminate = mode === 'copy';
+  const indeterminate = mode === 'copy' || queued;
   const [elapsed, setElapsed] = useState(0);
 
   useEffect(() => {
@@ -40,16 +43,21 @@ export function ProgressPanel({
   const outName = useMemo(() => outputPath.split(/[\\/]/).pop() ?? outputPath, [outputPath]);
   const pct = progress?.pct ?? 0;
 
-  const metaText = indeterminate
-    ? '正在处理，通常几秒内完成'
-    : `已用 ${fmtDur(elapsed)} · 剩余约 ${fmtDur(progress?.etaSec ?? null)}`;
+  const metaText = queued
+    ? '前面还有任务在转换，轮到它会自动开始'
+    : indeterminate
+      ? '正在处理，通常几秒内完成'
+      : `已用 ${fmtDur(elapsed)} · 剩余约 ${fmtDur(progress?.etaSec ?? null)}`;
 
   return (
     <div className="card job-card">
       <div className="job-head">
         <div className="pulse-dot" />
         <div>
-          <div className="job-title">{MODE_RUNNING_TITLE[mode]}</div>
+          <div className="job-title">{
+            // 排队中不说「正在压缩」，否则用户会以为已经在跑
+            queued ? '已加入队列 · 等待开始' : MODE_RUNNING_TITLE[mode]
+          }</div>
           <div className="job-sub">
             {fileName}{' '}
             <span className="mono" style={{ color: 'var(--text-tertiary)' }}>

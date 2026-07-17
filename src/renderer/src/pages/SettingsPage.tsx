@@ -92,6 +92,78 @@ export function SettingsPage(): ReactElement {
         </div>
       </div>
 
+      <div className="section-label">批量队列</div>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">输出参数模式</div>
+            <div className="s-desc">
+              共用全局参数：新任务跟随参数预设页的配置 ·
+              单任务独立参数：每个任务可单独设定格式与档位。
+              切换只影响之后新增的任务，队列里已有的任务不变。
+            </div>
+          </div>
+          <div className="segmented" role="group" aria-label="输出参数模式">
+            <button
+              type="button"
+              aria-pressed={(settings?.queueMode ?? 'shared') === 'shared'}
+              onClick={() => {
+                if (settings?.queueMode === 'shared') return;
+                void update({ queueMode: 'shared' });
+                toast('后续新增任务将共用全局参数', 'info');
+              }}
+            >
+              共用全局参数
+            </button>
+            <button
+              type="button"
+              aria-pressed={settings?.queueMode === 'per-task'}
+              onClick={() => {
+                if (settings?.queueMode === 'per-task') return;
+                void update({ queueMode: 'per-task' });
+                toast('后续新增任务将各自携带参数，可在队列页单独调整', 'info');
+              }}
+            >
+              单任务独立参数
+            </button>
+          </div>
+        </div>
+
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">任务失败后</div>
+            <div className="s-desc">
+              继续：跳过失败任务，接着转换后面的 ·
+              暂停：整个队列停下等你处理。失败任务都会标红并记录错误日志，可单独重试或删除。
+            </div>
+          </div>
+          <div className="segmented" role="group" aria-label="任务失败后">
+            <button
+              type="button"
+              aria-pressed={(settings?.failurePolicy ?? 'continue') === 'continue'}
+              onClick={() => {
+                if (settings?.failurePolicy === 'continue') return;
+                void update({ failurePolicy: 'continue' });
+                toast('单个任务失败后会继续运行剩余任务', 'info');
+              }}
+            >
+              继续运行
+            </button>
+            <button
+              type="button"
+              aria-pressed={settings?.failurePolicy === 'pause'}
+              onClick={() => {
+                if (settings?.failurePolicy === 'pause') return;
+                void update({ failurePolicy: 'pause' });
+                toast('单个任务失败后会暂停整个队列', 'info');
+              }}
+            >
+              暂停队列
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="section-label">外观</div>
       <div className="setting-card">
         <div className="setting-row">
@@ -156,7 +228,7 @@ export function SettingsPage(): ReactElement {
         <div className="setting-row">
           <div className="s-body">
             <div className="s-name">同时转换任务数</div>
-            <div className="s-desc">当前版本仅支持单文件转换</div>
+            <div className="s-desc">固定为 1：其余任务在队列里排队，可调并发将在后续版本开放</div>
           </div>
           <span className="mono" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>
             1

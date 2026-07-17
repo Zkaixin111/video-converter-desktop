@@ -28,7 +28,7 @@ export function DropZone({ busy, onPick }: DropZoneProps): ReactElement {
           <Icon name="i-upload" />
         </div>
         <div className="dz-title">{busy ? '正在读取文件信息…' : '把视频拖到这里'}</div>
-        <div className="dz-sub">支持 MP4、MKV、AVI、MOV、FLV 等常见格式 · 一次一个文件</div>
+        <div className="dz-sub">支持 MP4、MKV、AVI、MOV、FLV 等常见格式 · 多个文件可一起拖入排队</div>
         <Button variant="secondary" onClick={onPick} disabled={busy}>
           {busy ? '读取中…' : '选择文件…'}
         </Button>

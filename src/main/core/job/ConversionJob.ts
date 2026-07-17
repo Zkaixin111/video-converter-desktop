@@ -29,6 +29,13 @@ export interface ConversionJobOptions {
   plan: PlanResult;
   outputPath: string;
   target?: ContainerKey;
+  /**
+   * 任务 id。队列层会把自己的 jobId 传进来 —— 必须**同一个**：
+   * progress / state / result 三个事件都用它，渲染层靠它把事件归到对应卡片。
+   * 早先这里各自 randomUUID 会导致「队列拿到的 id」和「进度事件里的 id」不一致，
+   * 界面表现为进度条永远不动、终态被当成别人的任务忽略。
+   */
+  jobId?: string;
   onProgress?: (payload: ProgressPayload) => void;
   onState?: (snapshot: JobSnapshot) => void;
 }
@@ -51,7 +58,7 @@ export class ConversionJob {
   private cancelled = false;
 
   constructor(options: ConversionJobOptions) {
-    this.id = randomUUID();
+    this.id = options.jobId ?? randomUUID();
     this.meta = options.meta;
     this.plan = options.plan;
     this.outputPath = options.outputPath;
@@ -73,6 +80,7 @@ export class ConversionJob {
       status: this.status,
       jobId: this.id,
       fileName: this.meta.fileName,
+      sourcePath: this.meta.path,
       target: this.target,
       progress: this.progress,
       result: this.result,

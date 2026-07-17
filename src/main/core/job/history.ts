@@ -85,6 +85,33 @@ export class HistoryStore {
     fs.mkdirSync(dir, { recursive: true });
     const tmp = `${this.file}.tmp`;
     fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-    fs.renameSync(tmp, this.file);
+
+    // rename 在 Windows 上偶发 EPERM/EBUSY：杀毒软件、搜索索引、刚被另一个
+    // 进程打开过的目标文件都会让替换瞬间失败。历史是「写一次就完了」的数据，
+    // 重试几次比直接丢掉这次记录划算（实测全量测试并发跑时会撞上）。
+    let lastErr: unknown;
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      try {
+        fs.renameSync(tmp, this.file);
+        return;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') break;
+        sleepSync(20 * (attempt + 1));
+      }
+    }
+    throw lastErr;
   }
+}
+
+/**
+ * 同步小睡。
+ *
+ * 这里只能同步等待：write() 被 add() 同步调用，而 add() 在 job 的终态回调里，
+ * 改成异步会把「历史写入」变成一条新的时序依赖。阻塞上限 200ms 且只在失败重试路径上。
+ */
+function sleepSync(ms: number): void {
+  const buf = new Int32Array(new SharedArrayBuffer(4));
+  Atomics.wait(buf, 0, 0, ms);
 }

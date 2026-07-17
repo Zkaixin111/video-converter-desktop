@@ -41,3 +41,10 @@ export function requireObject(value: unknown, field: string): Record<string, unk
   }
   return value as Record<string, unknown>;
 }
+
+export function requireArray(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new AppError('E_BAD_REQUEST', `参数 ${field} 必须是非空数组。`);
+  }
+  return value;
+}

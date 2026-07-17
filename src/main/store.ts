@@ -21,6 +21,9 @@ export const DEFAULT_SETTINGS: Settings = {
   openFolderAfterDone: true,
   density: 'normal',
   presets: defaultPresets(),
+  // 默认「共用全局参数」+「失败继续」：这两条是打扰最小的组合
+  queueMode: 'shared',
+  failurePolicy: 'continue',
 };
 
 interface Schema {

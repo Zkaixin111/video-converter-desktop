@@ -29,12 +29,23 @@ export const CH = {
   historyList: 'history:list',
   historyRemove: 'history:remove',
   historyClear: 'history:clear',
+
+  /** 批量队列 */
+  queueEnqueue: 'queue:enqueue',
+  queueList: 'queue:list',
+  queueUpdate: 'queue:update',
+  queueCancel: 'queue:cancel',
+  queueRemove: 'queue:remove',
+  queueRetry: 'queue:retry',
+  queueResume: 'queue:resume',
 } as const;
 
 /** 推送型事件 */
 export const EV = {
   progress: 'convert:progress',
   state: 'convert:state',
+  /** 队列结构变化（入队 / 状态流转 / 暂停恢复），渲染层整体替换 */
+  queue: 'queue:changed',
 } as const;
 
 export type WindowAction = 'minimize' | 'maximize' | 'close';

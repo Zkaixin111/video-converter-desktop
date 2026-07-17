@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { translateFfmpegError } from '../../src/main/core/ffmpeg/errors';
+import { AppError, toAppError } from '../../src/shared/errors';
 
 const CASES: { name: string; stderr: string; code: string }[] = [
   {
@@ -88,5 +89,47 @@ describe('translateFfmpegError', () => {
     for (const c of CASES) {
       expect(translateFfmpegError(c.stderr, 1).hint).toBeTruthy();
     }
+  });
+});
+
+describe('toAppError · 原生异常的翻译', () => {
+  const fsError = (code: string, message: string): Error => {
+    const err = new Error(message) as NodeJS.ErrnoException;
+    err.code = code;
+    return err;
+  };
+
+  it('目录不可写（EEXIST / ENOTDIR）不会把英文 errno 糊到界面上', () => {
+    const err = toAppError(fsError('EEXIST', "EEXIST: file already exists, mkdir 'C://x'"));
+    expect(err.code).toBe('E_PERMISSION');
+    // 用户看到的是中文，英文原文只进 detail（诊断信息）
+    expect(err.message).toMatch(/[\u4e00-\u9fa5]/);
+    expect(err.message).not.toContain('EEXIST');
+    expect(err.detail).toContain('EEXIST');
+    expect(err.toUserMessage()).toMatch(/保存位置/);
+  });
+
+  it('磁盘满 / 权限 / 文件不存在各自映射到对应错误码', () => {
+    expect(toAppError(fsError('ENOSPC', 'no space')).code).toBe('E_DISK_FULL');
+    expect(toAppError(fsError('EACCES', 'denied')).code).toBe('E_PERMISSION');
+    expect(toAppError(fsError('EPERM', 'denied')).code).toBe('E_PERMISSION');
+    expect(toAppError(fsError('ENOENT', 'missing')).code).toBe('E_FILE_NOT_FOUND');
+    expect(toAppError(fsError('EBUSY', 'busy')).code).toBe('E_FILE_UNREADABLE');
+  });
+
+  it('已经是 AppError 的原样返回，不被二次包装', () => {
+    const original = new AppError('E_CANCELLED');
+    expect(toAppError(original)).toBe(original);
+  });
+
+  it('没有 errno 的普通异常仍然落到 E_UNKNOWN，并保留堆栈', () => {
+    const err = toAppError(new Error('boom'));
+    expect(err.code).toBe('E_UNKNOWN');
+    expect(err.message).toBe('boom');
+  });
+
+  it('非 Error 的抛出物也能转成 AppError', () => {
+    expect(toAppError('字符串错误').code).toBe('E_UNKNOWN');
+    expect(toAppError(null).code).toBe('E_UNKNOWN');
   });
 });

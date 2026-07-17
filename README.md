@@ -1,6 +1,6 @@
 # 视频转换器（Video Converter Desktop）
 
-本地视频格式转换桌面客户端。拖入一个视频，选一个目标格式，应用负责两件事：
+本地视频格式转换桌面客户端。拖入一个或多个视频，选一个目标格式，应用负责两件事：
 **让它一定能用**，以及**告诉你为什么之前不行**。
 
 - Electron 44 + React 19 + TypeScript 5.9 + Vite 8 + Tailwind 4
@@ -9,7 +9,7 @@
 
 ---
 
-## 1. 现在能做什么（MVP 范围）
+## 1. 现在能做什么（MVP + P1）
 
 | 能力 | 说明 |
 |---|---|
@@ -25,8 +25,11 @@
 | 设置持久化 | 默认保存位置 / 默认格式 / 完成后打开文件夹 / 界面密度（electron-store） |
 | **画质档位真实生效**（P1） | 参数预设页的 8 容器 × 3 档直接决定 CRF / 目标码率 / 音频码率；`standard` 与 MVP 参数逐字节一致 |
 | **转换历史**（P1） | 成功转换落一条记录（最多 100 条），队列页可回看产物大小、校验结果并打开所在文件夹 |
+| **批量队列**（P1） | 拖拽多个文件或「添加文件」多选即入队；单并发 FIFO，入队即预定输出路径；队列条目显示排队位次 / 进度 / 失败原因 |
+| **两种输出参数模式**（P1） | 共用全局参数（默认，任务跟随参数预设页）或单任务独立参数（每条任务自带格式与档位，可在队列里单独改） |
+| **失败处理策略**（P1） | 设置页二选一：失败后继续跑剩下的，或暂停整个队列等用户处理；失败任务标红、记日志、可单独重试或删除 |
 
-**不在 MVP 内**（代码里已标 `P1` / `P2`）：批量队列、硬件加速、深色模式、字幕与多音轨保留、画面裁剪/缩放、断点续传。
+**不在 MVP / P1 内**（代码里已标 `P1` / `P2`）：硬件加速、深色模式、字幕与多音轨保留、画面裁剪/缩放、断点续传、队列持久化。
 完整的下一阶段排序、每项的范围与验收标准见 **[docs/ROADMAP-P1.md](docs/ROADMAP-P1.md)**，
 逐条状态见 [docs/BACKLOG.md](docs/BACKLOG.md)。
 
@@ -85,16 +88,16 @@ pnpm dev
 │   │   │   │   ├── errors.ts    stderr → 中文错误
 │   │   │   │   └── paths.ts     二进制路径（开发/打包两态）
 │   │   │   ├── fs/              输出路径避让、.part 临时文件
-│   │   │   └── job/             ConversionJob 状态机 + JobManager 单任务调度 + history 历史存储
-│   │   ├── ipc/                 通道注册（每个 handler 做运行时入参校验）
+│   │   │   └── job/             ConversionJob 状态机 + JobManager 单并发队列调度 + history 历史存储
+│   │   ├── ipc/                 通道注册（每个 handler 做运行时入参校验）；queue.ts 是唯一的参数解析点
 │   │   ├── history.ts           历史存储单例（唯一 import electron 的地方）
 │   │   ├── logger.ts            滚动日志（userData/logs/app.log）
 │   │   └── store.ts             electron-store 设置
 │   ├── preload/index.ts         具名 API 桥（不暴露 ipcRenderer）
-│   ├── shared/                  主进程与渲染进程共享的类型/矩阵/错误码
+│   ├── shared/                  共享的类型/矩阵/错误码 + queue.ts（队列纯规则，两端共用）
 │   └── renderer/                React 界面（1:1 对齐 UI 原型）
 ├── resources/bin/<平台>-<架构>/  FFmpeg 二进制（不入库）
-├── scripts/                     fixture 生成、CDP 截图 / 逐页巡检 / 打包态冒烟
+├── scripts/                     fixture 生成、CDP 截图 / 逐页巡检 / 打包态冒烟 / 队列界面验证
 ├── tests/                       unit（纯函数）+ integration（真转码）
 └── docs/
     ├── BACKLOG.md               P1 / P2 清单
@@ -191,14 +194,31 @@ x264:   high 18 / standard 20 / small 26
 写失败只记日志。历史是「可有可无」的数据，不能因为它让转换或启动失败。
 存储类不 import electron，路径由调用方注入，因此可以在 vitest 里直接 new 出来测。
 
+### 4.8 批量队列：并发恒为 1，参数只解析一次
+
+队列层只解决「排队」，不改变「同一时刻一个 ffmpeg」这条 MVP 前提。
+
+- **调度**：`entries[] + activeId`，`activeId` 非空时绝不 pump；`done` / `cancelled` 立刻移出队列
+  （成功结果进历史），`error` **留在队列里标红**，等用户重试或删除。
+- **输出路径在入队时预定**：`reserved: Set<string>` 参与 `resolveOutputPath` 的存在性判断。
+  少了这一步，同一源文件入队两次会算出同一个文件名，后者悄悄覆盖前者。
+- **参数只解析一次**：渲染层只上报 `{ meta, globalTarget, custom }`，由主进程
+  `resolveTaskParams` 结合设置算出最终 `target/preset`（优先级：任务自带 `custom` > 全局）。
+  两边各算一次是「界面显示 WebM、实际写 MP4」这类问题的根源。
+- **模式切换只影响新任务**：模式在**入队那一刻**读一次并固化进任务的 `custom`，
+  所以「能不能编辑」判定的是条目自身有没有 `custom`，而不是当前模式。
+- **失败策略在失败那一刻读取**：用户中途去设置页把「继续」改成「暂停」，下一次失败就按新策略走。
+- **jobId 唯一贯穿**：`ConversionJob` 由队列传入 `jobId`，`progress / state / result`
+  三处事件共用它，渲染层据此把事件归到对应卡片。
+
 ---
 
 ## 5. 测试
 
 | 层 | 文件 | 手段 |
 |---|---|---|
-| 纯函数 | `tests/unit/*.test.ts` | 145 例。planner 判定矩阵与档位、容器矩阵自洽、stderr 翻译、路径避让、ffprobe 归一化、历史存取与容错 |
-| 集成 | `tests/integration/*.test.ts` | 29 例。真 ffprobe 读真文件、真 ffmpeg 转码、真实取消、校验失败删文件、档位对产物大小的真实影响 |
+| 纯函数 | `tests/unit/*.test.ts` | 160 例。planner 判定矩阵与档位、容器矩阵自洽、stderr 翻译与 errno 映射、路径避让、ffprobe 归一化、历史存取与容错、队列参数解析与状态判定 |
+| 集成 | `tests/integration/*.test.ts` | 36 例。真 ffprobe 读真文件、真 ffmpeg 转码、真实取消、校验失败删文件、档位对产物大小的真实影响、队列 FIFO / 路径预定 / 两种失败策略 / 重试 |
 | 回归 | `tests/regression/matrix.test.ts` | 32 例。4 类源 × 8 目标全组合真转 + ffprobe 读回，报告见 [docs/regression-report.md](docs/regression-report.md) |
 
 集成/回归测试检测不到 ffmpeg 或 fixture 时会 **skip 并打印醒目警告**，
@@ -215,6 +235,16 @@ node scripts/smoke-packaged.mjs 9223     # 通过 window.api 跑真实链路
 node scripts/cdp-nav-check.mjs 9223      # 逐页点一遍并截图
 ```
 
+开发态的界面自动化走另一个开关（不必临时改代码）：
+
+```bash
+CDP_PORT=9222 pnpm dev                         # 另一个终端
+node scripts/cdp-queue-check.mjs 9222          # 批量队列 24 条断言 + 4 张截图
+```
+
+`cdp-queue-check.mjs` 用**真实转码**驱动界面：入队 → 切模式 → 单独改参数 →
+制造一次失败 → 验证暂停与恢复，并把截图写进 `docs/screenshots`。
+
 实测结果（本机 Windows 11 / electron 44.9.0）：
 
 | 检查项 | 结果 |
@@ -230,17 +260,19 @@ node scripts/cdp-nav-check.mjs 9223      # 逐页点一遍并截图
 
 ---
 
-## 6. 已知限制（MVP 有意为之）
+## 6. 已知限制（MVP / P1 有意为之）
 
 1. **只处理第一条视频流 + 第一条音轨**；字幕轨与额外音轨会被丢弃，转换前会明确提示。
 2. **重编码参数不可微调**：只有三档预设（高清优先 / 标准 / 体积优先），不支持手填 CRF、双遍编码或目标体积。
    直通（只换封装）不经过编码器，因此档位对它是空操作。
 3. **校验是容器级的**：只确认「时长对得上、流没丢、文件不是 0 字节」，不做逐帧比对（P1-06）。
-4. **单任务**：同一时刻只允许一个转换；批量队列需要先定交互（见 ROADMAP §5）。
-5. **无断点续传**：取消后从头再来。
-6. **历史只记成功**：失败与取消不进历史，也没有「重跑」按钮。
-7. **深色模式未实现**：Token 已预埋，开关按原型置灰。
-8. **只验证了 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
+4. **并发固定为 1**：队列可以排很多任务，但同一时刻只跑一个 ffmpeg（抢 CPU 会让进度与失败归因都不可信）；
+   并发数调节在设置页如实标注为「后续版本」。
+5. **队列不持久化**：重启应用后队列清空（成功的结果仍留在「最近记录」里）；崩溃恢复见 BACKLOG P2-06。
+6. **无断点续传**：取消或失败后重试是从头再转，不做段级续传。
+7. **历史只记成功**：失败与取消不进历史；失败任务留在队列里可以重试或删除，但不会进历史列表。
+8. **深色模式未实现**：Token 已预埋，开关按原型置灰。
+9. **只验证了 Windows x64**：`extraResources` 复制 `resources/bin` 整棵树，
    其他平台需要自行放入对应目录的二进制；安装器未做代码签名，SmartScreen 会提示未知发布者。
 
 ---

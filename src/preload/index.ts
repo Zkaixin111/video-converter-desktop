@@ -12,6 +12,7 @@ import { CH, EV } from '../shared/channels';
 import type {
   Capabilities,
   ContainerKey,
+  EnqueueItemInput,
   HistoryEntry,
   IpcResult,
   JobSnapshot,
@@ -19,7 +20,10 @@ import type {
   PlanResult,
   PresetTier,
   ProgressPayload,
+  QueueItem,
+  QueueSnapshot,
   Settings,
+  TaskParams,
 } from '../shared/types';
 
 /** 事件订阅统一返回取消函数，避免渲染层反复挂载后重复触发 */
@@ -72,8 +76,36 @@ const api = {
 
   status: (): Promise<IpcResult<JobSnapshot>> => ipcRenderer.invoke(CH.status),
 
+  /* ── 队列 ─────────────────────────────────────────────── */
+  enqueue: (
+    items: EnqueueItemInput[],
+    outputDir?: string | null,
+  ): Promise<IpcResult<QueueItem[]>> =>
+    ipcRenderer.invoke(CH.queueEnqueue, { items, outputDir }),
+
+  listQueue: (): Promise<IpcResult<QueueSnapshot>> => ipcRenderer.invoke(CH.queueList),
+
+  updateQueueItem: (
+    jobId: string,
+    custom: TaskParams | null,
+    globalTarget: ContainerKey,
+  ): Promise<IpcResult<QueueItem>> =>
+    ipcRenderer.invoke(CH.queueUpdate, { jobId, custom, globalTarget }),
+
+  cancelQueueItem: (jobId?: string): Promise<IpcResult<{ ok: boolean }>> =>
+    ipcRenderer.invoke(CH.queueCancel, { jobId }),
+
+  removeQueueItem: (jobId: string): Promise<IpcResult<QueueSnapshot>> =>
+    ipcRenderer.invoke(CH.queueRemove, { jobId }),
+
+  retryQueueItem: (jobId: string): Promise<IpcResult<QueueSnapshot>> =>
+    ipcRenderer.invoke(CH.queueRetry, { jobId }),
+
+  resumeQueue: (): Promise<IpcResult<QueueSnapshot>> => ipcRenderer.invoke(CH.queueResume),
+
   onProgress: (cb: (p: ProgressPayload) => void) => subscribe<ProgressPayload>(EV.progress, cb),
   onState: (cb: (s: JobSnapshot) => void) => subscribe<JobSnapshot>(EV.state, cb),
+  onQueue: (cb: (s: QueueSnapshot) => void) => subscribe<QueueSnapshot>(EV.queue, cb),
 
   /* ── 历史 ─────────────────────────────────────────────── */
   listHistory: (): Promise<IpcResult<HistoryEntry[]>> => ipcRenderer.invoke(CH.historyList),
@@ -90,7 +122,8 @@ const api = {
   selectOutputDir: (): Promise<IpcResult<{ path: string | null }>> =>
     ipcRenderer.invoke(CH.selectOutputDir),
 
-  selectVideo: (): Promise<IpcResult<{ path: string | null }>> => ipcRenderer.invoke(CH.selectVideo),
+  selectVideo: (multi = false): Promise<IpcResult<{ path: string | null; paths: string[] }>> =>
+    ipcRenderer.invoke(CH.selectVideo, { multi }),
 
   openExternal: (url: string): Promise<IpcResult<{ ok: boolean }>> =>
     ipcRenderer.invoke(CH.openExternal, { url }),
