@@ -1,0 +1,111 @@
+/**
+ * 待转换批次列表（转换页，仅在批次 ≥ 2 时出现）。
+ *
+ * 三个设计决定：
+ *   1. **每行显示自己的判定**：同一批里第 1 个可能直通、第 7 个需要重压缩，
+ *      只标一个「全部转为 MP4」会让用户以为都很快。
+ *   2. **不显示编码器名字**：与文件卡同一口径，界面上不出现 h264 / vp9 这类词。
+ *   3. **移除按钮逐行给出**：批次里挑错的场景比想象中常见（拖进来一个不想转的）。
+ */
+import type { ReactElement } from 'react';
+import { MAX_BATCH_TOTAL } from '../../../../shared/batch';
+import { CONTAINERS } from '../../../../shared/containers';
+import type { ContainerKey, ConversionMode } from '../../../../shared/types';
+import { fmtDur, fmtSize } from '../../lib/format';
+import type { BatchEntry } from '../../store/useAppStore';
+
+const MODE_LABEL: Record<ConversionMode, string> = {
+  copy: '直通',
+  remux: '混合直通',
+  transcode: '重压缩',
+};
+
+interface BatchListProps {
+  entries: BatchEntry[];
+  target: ContainerKey;
+  /** 探测中：整块降透明度并禁用移除，避免动到正在写入的列表 */
+  busy: boolean;
+  onRemove: (path: string) => void;
+}
+
+export function BatchList({ entries, target, busy, onRemove }: BatchListProps): ReactElement {
+  return (
+    <div className={`batch-card${busy ? ' is-busy' : ''}`}>
+      <div className="batch-head">
+        <span className="b-title">待转换 {entries.length} 个视频</span>
+        <span className="b-sub">
+          全部转为 {CONTAINERS[target].label} · 上限 {MAX_BATCH_TOTAL} 个
+        </span>
+      </div>
+
+      <ul className="batch-rows">
+        {entries.map((entry, index) => {
+          const meta = entry.meta;
+          const mode = entry.plan?.mode;
+          return (
+            <li className="batch-row" key={meta.path}>
+              <span className="b-idx">{index + 1}</span>
+              <div className="b-body">
+                <div className="b-name" title={meta.path}>
+                  {meta.fileName}
+                </div>
+                <div className="b-meta">
+                  {fmtSize(meta.sizeBytes)} · {fmtDur(meta.durationSec)}
+                  {mode ? <span className={`b-mode is-${mode}`}>{MODE_LABEL[mode]}</span> : null}
+                </div>
+              </div>
+              <button
+                type="button"
+                className="btn-text"
+                disabled={busy}
+                onClick={() => onRemove(meta.path)}
+              >
+                移除
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * 批量判定条：批次 ≥ 2 时替代单个文件的判定条。
+ *
+ * 为什么不直接显示第一条的判定：那会让用户以为整批都是「无损直通、预计 2 秒」，
+ * 实际里面可能有 6 个要重压缩。这里给的是**汇总**——各模式各几个、总共多久。
+ */
+export function BatchSummary({ entries, target }: { entries: BatchEntry[]; target: ContainerKey }): ReactElement {
+  const counts: Record<ConversionMode, number> = { copy: 0, remux: 0, transcode: 0 };
+  let totalSec = 0;
+  for (const entry of entries) {
+    if (entry.plan) {
+      counts[entry.plan.mode] += 1;
+      totalSec += entry.plan.estimate.approxSeconds;
+    }
+  }
+
+  const parts = (['copy', 'remux', 'transcode'] as ConversionMode[])
+    .filter((mode) => counts[mode] > 0)
+    .map((mode) => `${MODE_LABEL[mode]} ${counts[mode]} 个`);
+
+  return (
+    <div className="batch-banner">
+      <span className="bb-ico">
+        <span className="bb-count">{entries.length}</span>
+      </span>
+      <div className="bb-body">
+        <div className="bb-title">
+          共 {entries.length} 个视频 → 全部转为 {CONTAINERS[target].label}
+        </div>
+        <div className="bb-desc">
+          逐个判定：{parts.join(' · ')}
+          {totalSec > 0 ? ` · 预计共约 ${Math.max(1, Math.round(totalSec))} 秒` : ''}
+          <br />
+          转换按顺序执行，进度与失败处理在「任务队列」里查看
+        </div>
+      </div>
+    </div>
+  );
+}

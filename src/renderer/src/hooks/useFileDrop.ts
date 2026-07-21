@@ -17,11 +17,14 @@ export function useFileDrop(): boolean {
   useEffect(() => {
     const state = () => useAppStore.getState();
     /**
-     * 高亮显示的条件：转换页空态，或队列页。
-     * 队列页永远可以接（批量入队），所以不分状态直接高亮。
+     * 高亮显示的条件：队列页，或转换页还没开始转换（空态 / 已选好格式）。
+     * 转换中不亮，因为那时拖进来的文件无处可去。
      */
-    const isHot = () =>
-      state().page === 'queue' || (state().page === 'convert' && state().stage === 'empty');
+    const isHot = () => {
+      const s = state();
+      if (s.page === 'queue') return true;
+      return s.page === 'convert' && (s.stage === 'empty' || s.stage === 'setup');
+    };
 
     const onDragEnter = (e: DragEvent): void => {
       if (!isHot()) return;
@@ -59,8 +62,9 @@ export function useFileDrop(): boolean {
         return;
       }
 
-      // 1 个文件 → 选择格式；多个文件 → 直接按当前参数批量入队（store 里分流）
-      void app.addPaths(paths);
+      // 转换页 = 组装区（攒成一批再一起转）；队列页 = 执行区（直接入队）
+      if (app.page === 'queue') void app.enqueuePaths(paths);
+      else void app.addToBatch(paths);
     };
 
     document.addEventListener('dragenter', onDragEnter);

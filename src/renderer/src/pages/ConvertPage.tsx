@@ -3,13 +3,21 @@
  *
  * 五种阶段互斥渲染：empty / probing → 拖拽区；setup / running / done / error → 文件卡 + 对应卡片。
  * 所有判定结果都来自主进程（planner + outputPath），这里只做展示与动作转发。
+ *
+ * P1 起这一页同时是「批量转换的组装区」：
+ *   · 1 个文件 → 完全维持原有单文件视图（文件卡 + 判定条 + 开始转换）
+ *   · 2 个及以上 → 换成批次列表 + 汇总判定条，整批共用同一个目标格式
+ *   · 无论几个，「加入下一个视频 / 一次选多个」的入口都在同一位置，上限 10 个
  */
 import type { ReactElement } from 'react';
+import { MAX_BATCH_TOTAL } from '../../../shared/batch';
+import { CONTAINERS } from '../../../shared/containers';
 import { useAppStore } from '../store/useAppStore';
 import { DropZone } from '../components/convert/DropZone';
 import { MediaCard } from '../components/convert/MediaCard';
 import { TargetPicker } from '../components/convert/TargetPicker';
 import { PlanSummary } from '../components/convert/PlanSummary';
+import { BatchList, BatchSummary } from '../components/convert/BatchList';
 import { ProgressPanel } from '../components/convert/ProgressPanel';
 import { ResultCard } from '../components/convert/ResultCard';
 import { ErrorPanel } from '../components/convert/ErrorPanel';
@@ -54,6 +62,7 @@ function GuideCard(): ReactElement {
 export function ConvertPage(): ReactElement {
   const stage = useAppStore((s) => s.stage);
   const meta = useAppStore((s) => s.meta);
+  const batch = useAppStore((s) => s.batch);
   const thumb = useAppStore((s) => s.thumb);
   const target = useAppStore((s) => s.target);
   const plan = useAppStore((s) => s.plan);
@@ -66,7 +75,8 @@ export function ConvertPage(): ReactElement {
   const myJobId = useAppStore((s) => s.myJobId);
   const queue = useAppStore((s) => s.queue);
 
-  const pickFile = useAppStore((s) => s.pickFile);
+  const pickIntoBatch = useAppStore((s) => s.pickIntoBatch);
+  const removeBatchItem = useAppStore((s) => s.removeBatchItem);
   const setTarget = useAppStore((s) => s.setTarget);
   const chooseOutputDir = useAppStore((s) => s.chooseOutputDir);
   const start = useAppStore((s) => s.start);
@@ -83,6 +93,10 @@ export function ConvertPage(): ReactElement {
     ? queue?.items.find((i) => i.jobId === myJobId)?.status === 'pending'
     : false;
 
+  const count = batch.length;
+  const full = count >= MAX_BATCH_TOTAL;
+  const multi = count > 1;
+
   return (
     <section className="page" aria-label="转换">
       <header className="page-head">
@@ -94,21 +108,59 @@ export function ConvertPage(): ReactElement {
         engineMissing ? (
           <GuideCard />
         ) : (
-          <DropZone busy={stage === 'probing'} onPick={() => void pickFile()} />
+          <DropZone
+            busy={stage === 'probing'}
+            onPick={() => void pickIntoBatch(false)}
+            onPickMany={() => void pickIntoBatch(true)}
+          />
         )
       ) : null}
 
       {!empty && meta ? (
         <div>
-          <MediaCard meta={meta} thumb={thumb} onReplace={reset} />
+          {multi ? (
+            <BatchList
+              entries={batch}
+              target={target}
+              busy={busy}
+              onRemove={(p) => void removeBatchItem(p)}
+            />
+          ) : (
+            <MediaCard meta={meta} thumb={thumb} onReplace={reset} />
+          )}
 
           {stage === 'setup' ? (
             <div>
+              {/* 加入下一个视频：单文件与批量共用同一条入口，达到上限后禁用 */}
+              <div className="batch-add">
+                <Button
+                  variant="secondary"
+                  disabled={busy || full}
+                  onClick={() => void pickIntoBatch(false)}
+                >
+                  <Icon name="i-upload" />
+                  加入下一个视频
+                </Button>
+                <button
+                  type="button"
+                  className="btn-text"
+                  disabled={busy || full}
+                  onClick={() => void pickIntoBatch(true)}
+                >
+                  一次选多个
+                </button>
+                <span className={`batch-add-hint${full ? ' is-full' : ''}`}>
+                  {full
+                    ? `已达上限 ${MAX_BATCH_TOTAL} 个，不能再添加`
+                    : `已选 ${count}/${MAX_BATCH_TOTAL} 个${multi ? `，全部转为 ${CONTAINERS[target].label}` : ''}`}
+                </span>
+              </div>
+
               <div className="section-label">输出格式</div>
               <TargetPicker value={target} disabled={busy} onChange={(t) => void setTarget(t)} />
 
               <div className="section-label">转换方式</div>
-              <PlanSummary plan={plan} />
+              {multi ? <BatchSummary entries={batch} target={target} /> : <PlanSummary plan={plan} />}
 
               <div className="output-row">
                 <span className="lbl">输出位置</span>
@@ -122,7 +174,7 @@ export function ConvertPage(): ReactElement {
 
               <div className="action-row">
                 <Button variant="primary" size="lg" disabled={busy} onClick={() => void start()}>
-                  {busy ? '正在准备…' : '开始转换'}
+                  {busy ? '正在准备…' : multi ? `开始转换 ${count} 个视频` : '开始转换'}
                 </Button>
               </div>
             </div>

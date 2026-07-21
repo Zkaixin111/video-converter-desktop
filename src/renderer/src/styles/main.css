@@ -671,6 +671,172 @@ svg {
 }
 
 /* ===========================================================================
+   待转换批次（转换页 · 批量）
+   —— 2 个及以上时替换文件卡；加入入口与计数提示单独一条，单批两批共用
+   =========================================================================== */
+.batch-card {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-xs);
+  overflow: hidden;
+}
+.batch-card.is-busy {
+  opacity: 0.7;
+}
+.batch-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border-default);
+  background: var(--bg-subtle);
+}
+.batch-head .b-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.batch-head .b-sub {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+
+/* 不设内滚动：上限只有 10 行，跟着页面一起滚比套一层滚动条更自然，
+   否则最后一行会被切掉一半，看起来像加载失败 */
+.batch-rows {
+  max-height: none;
+}
+.batch-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 16px;
+  border-bottom: 1px solid var(--border-default);
+}
+.batch-row:last-child {
+  border-bottom: none;
+}
+.batch-row .b-idx {
+  width: 20px;
+  flex: none;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  text-align: right;
+}
+.batch-row .b-body {
+  flex: 1;
+  min-width: 0;
+}
+.batch-row .b-name {
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.batch-row .b-meta {
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* 逐条判定标签：颜色与判定条同一套语义（绿直通 / 琥珀混合 / 橙重压缩） */
+.b-mode {
+  padding: 0 5px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  font-size: 10px;
+  line-height: 15px;
+}
+.b-mode.is-copy {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+.b-mode.is-remux {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.b-mode.is-transcode {
+  color: var(--accent);
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+/* 「加入下一个视频」入口条：单文件与批量都显示在这一处 */
+.batch-add {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 10px;
+}
+.batch-add .btn svg {
+  width: 14px;
+  height: 14px;
+  margin-right: 4px;
+}
+.batch-add .batch-add-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+  font-family: var(--font-mono);
+}
+.batch-add .batch-add-hint.is-full {
+  color: var(--warn);
+}
+
+/* 批量判定条（替代单文件判定条） */
+.batch-banner {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border: 1px solid var(--primary-100);
+  background: var(--primary-50);
+  border-radius: var(--r-lg);
+}
+.batch-banner .bb-ico {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: var(--r-md);
+  background: var(--bg-surface);
+  border: 1px solid var(--primary-100);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.batch-banner .bb-count {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--primary-600);
+  font-family: var(--font-mono);
+}
+.batch-banner .bb-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.batch-banner .bb-desc {
+  margin-top: 3px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--text-secondary);
+}
+
+/* 空态里的「一次选多个」次要入口 */
+.dz-more {
+  margin-top: 8px;
+}
+
+/* ===========================================================================
    格式卡片
    =========================================================================== */
 .fmt-grid {

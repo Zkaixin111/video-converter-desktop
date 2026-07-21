@@ -8,6 +8,7 @@
  *     页面组件只读状态、不各自持有副本（避免进度条和队列页数字不一致）
  */
 import { create } from 'zustand';
+import { limitAdd, limitMessage } from '../../../shared/batch';
 import { CONTAINERS } from '../../../shared/containers';
 import type {
   Capabilities,
@@ -39,6 +40,18 @@ export interface ToastItem {
   message: string;
 }
 
+/**
+ * 待转换批次里的一条。
+ *
+ * 连同 `plan` / `outputPath` 一起缓存的原因：转换页要逐条显示「这条会直通还是重压缩」，
+ * 统一目标格式一改，所有条目的判定与输出路径都要跟着重算——缓存下来才不用在渲染里算。
+ */
+export interface BatchEntry {
+  meta: MediaMeta;
+  plan: PlanResult | null;
+  outputPath: string;
+}
+
 interface AppState {
   /* ── 导航 ─────────────────────────────── */
   page: Page;
@@ -46,6 +59,14 @@ interface AppState {
   /* ── 转换页 ───────────────────────────── */
   stage: Stage;
   meta: MediaMeta | null;
+  /**
+   * 待转换批次（批量转换的组装区）。
+   *
+   * 不变量：非空时 `batch[0]` 与上面的 `meta / plan / outputPath` 同源。
+   * 保留 `meta` 三件套是因为单文件视图、进度面板、结果卡、诊断信息都在读它们——
+   * 让 batch[0] 兼职「主文件」，改造量最小，也不会出现两套主文件。
+   */
+  batch: BatchEntry[];
   thumb: string | null;
   target: ContainerKey;
   plan: PlanResult | null;
@@ -74,12 +95,16 @@ interface AppState {
   init: () => Promise<void>;
   recheckCaps: () => Promise<void>;
   setPage: (page: Page) => void;
-  pickFile: () => Promise<void>;
   /** 队列页的「添加文件」：多选对话框，选完直接入队（1 个也走这条路） */
   pickFiles: () => Promise<void>;
-  loadFromPath: (path: string) => Promise<void>;
-  /** 拖拽/多选入口：1 个文件走「选择格式」流程，多个直接入队 */
-  addPaths: (paths: string[], forceQueue?: boolean) => Promise<void>;
+  /** 转换页：打开文件对话框并把选中的视频加入待转换批次 */
+  pickIntoBatch: (multi: boolean) => Promise<void>;
+  /** 拖拽 / 对话框的共同落点：探测 + 按上限加入批次 */
+  addToBatch: (paths: string[]) => Promise<void>;
+  /** 从待转换批次里移除一条 */
+  removeBatchItem: (path: string) => Promise<void>;
+  /** 队列页直通入队（不经过转换页的批次组装） */
+  enqueuePaths: (paths: string[]) => Promise<void>;
   setTarget: (target: ContainerKey) => Promise<void>;
   chooseOutputDir: () => Promise<void>;
   start: () => Promise<void>;
@@ -143,6 +168,41 @@ function presetFor(settings: Settings | null, target: ContainerKey): PresetTier 
   return settings?.presets?.[target] ?? 'standard';
 }
 
+/** 从路径取文件名（仅用于提示文案，不参与任何判定） */
+function fileNameOf(filePath: string): string {
+  const m = /[^\\/]+$/.exec(filePath);
+  return m ? m[0] : filePath;
+}
+
+/**
+ * 探测 + 按「统一目标格式」算出判定与输出路径。
+ *
+ * 每个条目都要有自己的 plan：批量里第 3 个文件可能是直通、第 7 个需要重压缩，
+ * 列表上要能逐条标出来，不能整批只显示主文件的判定。
+ */
+async function probeOne(
+  path: string,
+  target: ContainerKey,
+  outputDir: string | null,
+  settings: Settings | null,
+): Promise<BatchEntry> {
+  const meta = await call(window.api.probe(path));
+  const { plan, outputPath } = await call(
+    window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+  );
+  return { meta, plan, outputPath };
+}
+
+/** 缩略图是「锦上添花」：失败不影响任何流程，所以不 await、不抛错 */
+function fetchThumb(entry: BatchEntry, apply: (url: string) => void): void {
+  window.api
+    .thumbnail(entry.meta.path, Math.min(2, Math.max(0, entry.meta.durationSec / 3)))
+    .then((res) => {
+      if (res.ok && res.data.dataUrl) apply(res.data.dataUrl);
+    })
+    .catch(() => {});
+}
+
 let toastSeq = 0;
 /** init 只允许跑一次：StrictMode 在开发态会双调用 effect，重复订阅会让每条 toast 弹两遍 */
 let booted = false;
@@ -152,6 +212,7 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   stage: 'empty',
   meta: null,
+  batch: [],
   thumb: null,
   target: 'mp4',
   plan: null,
@@ -273,99 +334,169 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ page });
   },
 
-  pickFile: async () => {
+  /** 转换页：打开对话框并加入待转换批次（单选 / 多选共用一个落点） */
+  pickIntoBatch: async (multi) => {
     if (get().busy) return;
     try {
-      const { path } = await call(window.api.selectVideo());
-      if (!path) return;
-      await get().loadFromPath(path);
+      const { paths } = await call(window.api.selectVideo(multi));
+      if (paths.length === 0) return;
+      await get().addToBatch(paths);
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }
   },
 
   /**
-   * 多选入口（队列页「添加文件」、空态「添加文件」）。
+   * 多选入口（队列页「添加文件」）。
    *
-   * 与 pickFile 的区别：这里**不**弹格式选择，选完就按当前参数入队。
-   * 队列页要的是「往里塞活」，不是「一次只调一个文件」。
+   * 与转换页的区别：队列页是**执行区**，选完直接入队，不经过批次组装。
+   * 转换页是组装区，要先把文件攒成一个批次、统一目标格式，再一起开始。
    */
   pickFiles: async () => {
     if (get().busy) return;
     try {
       const { paths } = await call(window.api.selectVideo(true));
       if (paths.length === 0) return;
-      // forceQueue：即使只选了 1 个、即使转换页是空态，也要直接入队而不是载入转换页
-      await get().addPaths(paths, true);
+      await get().enqueuePaths(paths);
     } catch (err) {
-      get().toast(messageOf(err), 'error');
-    }
-  },
-
-  loadFromPath: async (path) => {
-    if (!isVideoPath(path)) {
-      const ext = extOf(path);
-      get().toast(
-        `这个文件不是视频${ext ? `（.${ext}）` : ''}，换一个视频文件试试`,
-        'warning',
-      );
-      return;
-    }
-    if (get().stage !== 'empty') {
-      get().toast('当前已有一个文件，请先点击「更换」', 'warning');
-      return;
-    }
-
-    set({ stage: 'probing', busy: true });
-
-    try {
-      const meta = await call(window.api.probe(path));
-      const { target, settings, outputDir } = get();
-      const { plan, outputPath } = await call(
-        window.api.preview(meta, target, outputDir, presetFor(settings, target)),
-      );
-
-      set({ meta, plan, outputPath, stage: 'setup', busy: false, thumb: null });
-      get().toast(`已载入 ${meta.fileName}`, 'success');
-
-      // 缩略图是「锦上添花」，失败不影响任何流程
-      window.api
-        .thumbnail(path, Math.min(2, Math.max(0, meta.durationSec / 3)))
-        .then((res) => {
-          if (res.ok && res.data.dataUrl) set({ thumb: res.data.dataUrl });
-        })
-        .catch(() => {});
-    } catch (err) {
-      set({ stage: 'empty', busy: false, meta: null });
       get().toast(messageOf(err), 'error');
     }
   },
 
   /**
-   * 拖拽 / 多选入口。
+   * 把文件加入待转换批次。
    *
-   * 取舍：
-   *   · 只有 1 个文件且界面是空的 → 走原来的「选择格式」流程（保留 MVP 体验）
-   *   · 其余情况 → 一律按当前面板参数直接入队，并跳到队列页
-   *     （逐个弹格式选择对批量场景是灾难）
+   * 三条要点：
+   *   1. **先算上限再探测**：15 个文件只探测前 10 个，不为被拒的文件白跑一次 ffprobe
+   *   2. **上限提示优先于成功提示**：超限时用户更需要知道「为什么只进来 5 个」
+   *   3. **不覆盖已有批次**：单个添加与批量添加是同一套累加逻辑，
+   *      所以「加入下一个视频」与「一次选多个」行为天然一致
    */
-  addPaths: async (paths, forceQueue = false) => {
+  addToBatch: async (paths) => {
+    if (get().busy) return;
+
+    const stage = get().stage;
+    if (stage === 'running' || stage === 'probing') {
+      get().toast('当前还有任务在读取或转换，等它结束或先取消再添加', 'warning');
+      return;
+    }
+
+    const videos = paths.filter(isVideoPath);
+    const skipped = paths.length - videos.length;
+    if (videos.length === 0) {
+      get().toast('这些不是视频文件，换一个视频试试', 'warning');
+      return;
+    }
+
+    // done / error 阶段再添加 = 开始新一批（旧文件已结束，结果在历史里）
+    const base = stage === 'done' || stage === 'error' ? [] : get().batch;
+    const limit = limitAdd(videos, base.length);
+    const notice = limitMessage(limit, base.length);
+
+    if (limit.accepted.length === 0) {
+      if (notice) get().toast(notice, 'warning');
+      return;
+    }
+
+    const wasEmpty = stage === 'empty';
+    set({ busy: true, ...(wasEmpty ? { stage: 'probing' as Stage } : {}) });
+
+    try {
+      const { target, outputDir, settings } = get();
+      const added: BatchEntry[] = [];
+      for (const path of limit.accepted) {
+        try {
+          added.push(await probeOne(path, target, outputDir, settings));
+        } catch (err) {
+          get().toast(`${fileNameOf(path)} 读取失败：${messageOf(err)}`, 'warning');
+        }
+      }
+
+      if (added.length === 0) {
+        set({ busy: false, ...(wasEmpty ? { stage: 'empty' as Stage } : {}) });
+        return;
+      }
+
+      const next = [...base, ...added];
+      const primary = next[0];
+      const primaryChanged = base[0]?.meta.path !== primary.meta.path;
+
+      set({
+        batch: next,
+        meta: primary.meta,
+        plan: primary.plan,
+        outputPath: primary.outputPath,
+        stage: 'setup',
+        busy: false,
+        error: null,
+        result: null,
+        thumb: primaryChanged ? null : get().thumb,
+      });
+
+      if (primaryChanged) fetchThumb(primary, (url) => set({ thumb: url }));
+
+      if (notice) {
+        get().toast(notice, 'warning');
+      } else if (skipped > 0) {
+        get().toast(`已加入 ${added.length} 个视频（跳过 ${skipped} 个非视频文件）`, 'success');
+      } else if (added.length === 1) {
+        get().toast(`已加入 ${added[0].meta.fileName}`, 'success');
+      } else {
+        get().toast(`已加入 ${added.length} 个视频`, 'success');
+      }
+    } catch (err) {
+      set({ busy: false, ...(wasEmpty ? { stage: 'empty' as Stage } : {}) });
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  /** 从批次里移除一条；移除主文件时由下一条顶上，并重取缩略图 */
+  removeBatchItem: async (path) => {
+    const { batch } = get();
+    const next = batch.filter((e) => e.meta.path !== path);
+    if (next.length === 0) {
+      get().reset();
+      return;
+    }
+
+    const primary = next[0];
+    const primaryChanged = batch[0]?.meta.path !== primary.meta.path;
+    set({
+      batch: next,
+      meta: primary.meta,
+      plan: primary.plan,
+      outputPath: primary.outputPath,
+      thumb: primaryChanged ? null : get().thumb,
+    });
+    if (primaryChanged) fetchThumb(primary, (url) => set({ thumb: url }));
+    get().toast(`已移除 ${fileNameOf(path)}`, 'info');
+  },
+
+  /**
+   * 队列页直通入队。
+   *
+   * 队列是执行区，不限制自身长度（任务会随着完成离开队列），
+   * 但**单次**添加同样受 10 个上限约束 —— 拖 50 个文件进来一次性压进队列没有意义。
+   */
+  enqueuePaths: async (paths) => {
     if (get().busy) return;
 
     const videos = paths.filter(isVideoPath);
-    const rejected = paths.length - videos.length;
+    const skipped = paths.length - videos.length;
     if (videos.length === 0) {
       get().toast('拖入的不是视频文件，换一个试试', 'warning');
       return;
     }
 
-    const { settings, target, outputDir, stage } = get();
-    if (!forceQueue && videos.length === 1 && stage === 'empty') {
-      await get().loadFromPath(videos[0]);
+    const limit = limitAdd(videos, 0);
+    const notice = limitMessage(limit, 0);
+    if (limit.accepted.length === 0) {
+      if (notice) get().toast(notice, 'warning');
       return;
     }
 
     // 单任务独立参数模式：新任务自带当前面板的格式与档位（之后可单独编辑）
+    const { settings, target, outputDir } = get();
     const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
     const custom: TaskParams | null = perTask
       ? { target, preset: presetFor(settings, target) }
@@ -374,12 +505,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ busy: true });
     try {
       const inputs = [];
-      for (const path of videos) {
+      for (const path of limit.accepted) {
         try {
           const meta = await call(window.api.probe(path));
           inputs.push({ meta, globalTarget: target, custom });
         } catch (err) {
-          get().toast(`${path.split(/[\\/]/).pop()} 读取失败：${messageOf(err)}`, 'warning');
+          get().toast(`${fileNameOf(path)} 读取失败：${messageOf(err)}`, 'warning');
         }
       }
       if (inputs.length === 0) {
@@ -388,31 +519,50 @@ export const useAppStore = create<AppState>((set, get) => ({
       }
 
       const items = await call(window.api.enqueue(inputs, outputDir));
-      set({ busy: false });
+      set({ busy: false, page: 'queue' });
       void get().refreshQueue();
-      get().toast(
-        `已加入队列：${items.length} 个文件${rejected > 0 ? `（跳过 ${rejected} 个非视频）` : ''}`,
-        'success',
-      );
-      set({ page: 'queue' });
+
+      if (notice) {
+        get().toast(notice, 'warning');
+      } else {
+        get().toast(
+          `已加入队列：${items.length} 个文件${skipped > 0 ? `（跳过 ${skipped} 个非视频）` : ''}`,
+          'success',
+        );
+      }
     } catch (err) {
       set({ busy: false });
       get().toast(messageOf(err), 'error');
     }
   },
 
-  setTarget: async (target) => {    const { meta, target: current, outputDir, settings } = get();
+  /**
+   * 切换统一目标格式。
+   *
+   * 批量的关键是**所有条目一起重算**：格式从 MP4 换成 WebM，
+   * 每条的输出扩展名、判定结果（直通还是重压缩）、预计耗时都会变，
+   * 只更新主文件会出现「列表里还写着 .mp4」的错位。
+   */
+  setTarget: async (target) => {
+    const { batch, target: current, outputDir, settings } = get();
     if (current === target) return;
     set({ target });
 
-    if (!meta) return;
+    if (batch.length === 0) return;
     try {
-      const { plan, outputPath } = await call(
-        window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+      const preset = presetFor(settings, target);
+      const next = await Promise.all(
+        batch.map(async (entry) => {
+          const { plan, outputPath } = await call(
+            window.api.preview(entry.meta, target, outputDir, preset),
+          );
+          return { ...entry, plan, outputPath };
+        }),
       );
       // 期间用户可能又切了格式，只接受最后一次
       if (get().target !== target) return;
-      set({ plan, outputPath });
+      const primary = next[0];
+      set({ batch: next, plan: primary.plan, outputPath: primary.outputPath });
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }
@@ -424,13 +574,20 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (!path) return;
 
       set({ outputDir: path });
-      // 立刻用新目录重算输出路径，避免「输入框显示 A，实际写到 B」
-      const { meta, target, settings } = get();
-      if (meta) {
-        const { plan, outputPath } = await call(
-          window.api.preview(meta, target, path, presetFor(settings, target)),
+      // 立刻用新目录重算输出路径，避免「输入框显示 A，实际写到 B」；批量要逐条重算
+      const { batch, target, settings } = get();
+      if (batch.length > 0) {
+        const preset = presetFor(settings, target);
+        const next = await Promise.all(
+          batch.map(async (entry) => {
+            const { plan, outputPath } = await call(
+              window.api.preview(entry.meta, target, path, preset),
+            );
+            return { ...entry, plan, outputPath };
+          }),
         );
-        set({ plan, outputPath });
+        const primary = next[0];
+        set({ batch: next, plan: primary.plan, outputPath: primary.outputPath });
       }
       get().toast('已切换输出位置', 'success');
     } catch (err) {
@@ -438,9 +595,18 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   },
 
+  /**
+   * 开始转换。
+   *
+   * 分批处理两种规模，因为它们的「观察位置」不同：
+   *   · 1 个文件 → 留在转换页看进度（原有单文件流程，一行未改）
+   *   · 2 个及以上 → 整批入队后跳到任务队列页
+   *     一次跑 10 个任务时，转换页那张单条进度卡说不清「还剩几个」，
+   *     而队列页本来就有逐条进度与失败处理，没有必要再实现第二套。
+   */
   start: async () => {
-    const { meta, target, outputDir, stage, busy, settings } = get();
-    if (!meta || stage !== 'setup' || busy) return;
+    const { batch, target, outputDir, stage, busy, settings } = get();
+    if (batch.length === 0 || stage !== 'setup' || busy) return;
 
     // 单任务独立参数模式：把当前面板的格式与档位固化到任务上（之后可在队列里单独改）
     const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
@@ -450,17 +616,42 @@ export const useAppStore = create<AppState>((set, get) => ({
 
     set({ busy: true, progress: null, result: null, error: null });
     try {
-      const [item] = await call(
-        window.api.enqueue([{ meta, globalTarget: target, custom }], outputDir),
+      const items = await call(
+        window.api.enqueue(
+          batch.map((entry) => ({ meta: entry.meta, globalTarget: target, custom })),
+          outputDir,
+        ),
       );
-      if (!item) throw new Error('入队失败');
+      if (items.length === 0) throw new Error('入队失败');
+
+      if (items.length === 1) {
+        set({
+          stage: 'running',
+          myJobId: items[0].jobId,
+          // 主进程可能因为同名冲突换了文件名，以它返回的为准
+          outputPath: items[0].outputPath,
+          busy: false,
+        });
+        void get().refreshQueue();
+        return;
+      }
+
+      // 批量：转换页清空回到空态，批次整体移交给队列
       set({
-        stage: 'running',
-        myJobId: item.jobId,
-        // 主进程可能因为同名冲突换了文件名，以它返回的为准
-        outputPath: item.outputPath,
+        stage: 'empty',
+        batch: [],
+        meta: null,
+        thumb: null,
+        plan: null,
+        outputPath: '',
+        progress: null,
+        result: null,
+        error: null,
         busy: false,
+        myJobId: null,
+        page: 'queue',
       });
+      get().toast(`已加入队列：${items.length} 个视频，正在按顺序转换`, 'success');
       void get().refreshQueue();
     } catch (err) {
       set({ busy: false });
@@ -487,6 +678,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       stage: 'empty',
       meta: null,
+      batch: [],
       thumb: null,
       plan: null,
       outputPath: '',
@@ -661,7 +853,7 @@ export function detailOfError(err: unknown): string | undefined {
  * 开发态把 store 挂到 window 上。
  *
  * 用途：在没有 Playwright 的环境里，用 CDP 的 Runtime.evaluate 直接驱动界面
- * （`__appStore.getState().loadFromPath('...')`），给各个状态截图核对 UI。
+ * （`__appStore.getState().addToBatch(['...'])`），给各个状态截图核对 UI。
  * 生产构建里 `import.meta.env.DEV` 为 false，这段不会执行。
  */
 if (import.meta.env.DEV) {

@@ -211,6 +211,39 @@ interface QueueItem {
 9. 失败原因用中文展示，原始 errno 只进日志与「复制诊断信息」。
 10. 既有 32 组合回归、MVP 单任务流程、`standard` 档位参数逐字节一致，全部不回归。
 
+### 5.6 追加需求：转换页整批组装与 10 个上限 `已实现`
+
+队列落地后产品侧追加一条：**转换页自己也要能凑一批**，整批统一一个目标格式，
+而不是「先入队再逐条改」。规格与落点：
+
+| 规格 | 实现落点 |
+|---|---|
+| 逐个添加，每加一个后仍能继续加 | `ConvertPage` 常驻一条 `.batch-add` 操作条：「加入下一个视频」（`pickIntoBatch(false)`）；1 个文件时也显示，所以加完第一个就能接着加 |
+| 一次性选择多个 | 同一条的「一次选多个」+ 空态拖拽区的「一次选择多个视频…」+ 整窗拖拽，三条入口都走 `addToBatch(paths)` |
+| 整批统一同一个目标格式 | 转换页只有一个 `target`；`setTarget` / `chooseOutputDir` 对整批 `Promise.all` 重算 `plan` 与 `outputPath`，扩展名一起变 |
+| 单次添加上限 10 | `shared/batch.ts` 的 `limitAdd(items, existing, cap, once)`，`once = MAX_BATCH_ONCE` |
+| 待转换总数上限 10 | 同一个 `limitAdd` 的 `cap = MAX_BATCH_TOTAL`，按 `existingCount` 扣掉已选数量 |
+| 达上限后禁止继续添加 + 明确提示 | 两个入口按钮 `disabled`、提示条转 `is-full` 强调色文案「已达上限 10 个，不能再添加」；满了再拖文件只弹一次 `limitMessage` |
+| 原有单文件流程不受影响 | `batch[0]` 兼职主文件：1 个文件仍渲染 `MediaCard + PlanSummary`、仍在转换页内看进度，`start()` 对 1 个走原路径、≥2 个才整批入队并跳队列页 |
+
+**判定顺序**（这是三种提示文案的由来）：先看总数是否已满 → 再看还能塞几个 →
+`take = min(单次上限, 剩余空位)`，`reason` 取「真正把数量压下来的那条约束」。
+
+**范围边界**：不做拖拽排序、不做批次内单条改格式（统一格式是需求本身）、
+不做批次模板保存；队列页「添加文件」按单次 10 个截断，但不限制队列总长度。
+
+**验收标准**（`scripts/cdp-batch-check.mjs` 38 条断言逐条覆盖）：
+1. 一次选 15 个 → 只进前 10 个，提示「一次最多添加 10 个视频，这次只加入前 10 个」。
+2. 已有 2 个再选 13 个 → 总数卡在 10，提示「最多同时转换 10 个视频，这次加入了 8 个（已有 2 个）」。
+3. 满 10 个 → 两个入口按钮 `disabled`，提示条为「已达上限 10 个，不能再添加」且用强调色。
+4. 满 10 个再拖文件 → 数量不变，只弹「请先转换或移除部分文件再加」。
+5. 1 个文件时视图与按钮文案与 MVP 完全一致；2 个起切批次列表 + 汇总条。
+6. 切换目标格式 → 整批输出扩展名一起变（mp4 → mkv），汇总条同步。
+7. 移除其中一条 → 入口按钮恢复可用，能继续添加。
+8. 整批开始 → 批次清空回空态、跳任务队列页、提示「已加入队列：N 个视频」。
+9. 单文件流程回归：仍在转换页内完成、`verified: true`、产物大小与 MVP 一致。
+10. `limitAdd / remainingSlots / limitMessage` 的边界（0 / 刚好 10 / NaN / 负数）全部单测覆盖。
+
 ---
 
 ## 6. 本轮实现清单
@@ -238,11 +271,20 @@ interface QueueItem {
 - [x] 设置页：输出参数模式 + 失败策略两个分段控件
 - [x] `toAppError`：原生 errno → 中文文案（失败卡片不再出现 `EEXIST: ...`）
 
+### C 追加 · 转换页整批组装
+- [x] `shared/batch.ts`：`MAX_BATCH_TOTAL` / `MAX_BATCH_ONCE` / `remainingSlots` / `limitAdd` / `limitMessage`
+- [x] `useAppStore`：`batch: BatchEntry[]` + `pickIntoBatch` / `addToBatch` / `removeBatchItem`；`setTarget` / `chooseOutputDir` 改为整批重算
+- [x] `ConvertPage`：常驻「加入下一个视频 / 一次选多个 / `已选 N/10 个`」操作条，满额禁用并转强调色
+- [x] `BatchList.tsx`：≥2 个文件时的批次列表（序号 / 文件名 / 体积时长 / 判定标签 / 移除）与批量汇总条
+- [x] `DropZone`：空态增加「一次选择多个视频…」入口；`useFileDrop` 按当前页面分流到 `addToBatch` / `enqueuePaths`
+- [x] `start()` 双出口：1 个留在转换页走原流程，≥2 个整批入队并跳队列页
+
 ### 测试与验证
-- [x] 单测：档位映射、planner 档位、历史存取、`resolveTaskParams` 优先级、`toAppError` 翻译
+- [x] 单测：档位映射、planner 档位、历史存取、`resolveTaskParams` 优先级、`toAppError` 翻译、批次数量规则（17 例）
 - [x] 集成：`tests/integration/queue.test.ts`（FIFO、路径预定、两种失败策略、重试、单任务编辑）
 - [x] 文档：README 能力表 / BACKLOG 状态 / 本文件
 - [x] 界面验证：`scripts/cdp-queue-check.mjs`（24 条断言 + 4 张截图，真实转码驱动）
+- [x] 界面验证：`scripts/cdp-batch-check.mjs`（38 条断言 + 4 张截图，15 个真实视频副本驱动）
 
 ### 本轮修掉的问题
 
@@ -252,3 +294,4 @@ interface QueueItem {
 | errno 外泄 | 失败卡片显示 `EEXIST: file already exists, mkdir 'C:\…'` | `toAppError` 用原生 `err.message` 当用户文案 | 增加 errno → `ErrorCode` 映射，原文转存 `detail` |
 | 历史偶发写失败 | 高并发下 `rename` 抛 EPERM/EBUSY，该条历史丢失 | Windows 杀软 / 索引服务短暂占用目标文件 | 原子写加重试（最多 3 次退避），仍失败才记警告 |
 | 侧边栏「迭代」徽标 | 队列页明明已经实现，导航仍写着「迭代」 | 原型遗留标记 | 去掉徽标；拖拽区文案「一次一个文件」同步改为可多选 |
+| 批次列表最后一行被切一半 | 满 10 个时第 10 行只露出上边缘 | 列表给了 `max-height: 268px` 的内滚动，装不下 10 行 | 去掉内滚动（上限只有 10 行），让列表跟随页面一起滚 |
