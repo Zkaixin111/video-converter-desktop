@@ -32,7 +32,8 @@
 
 **不在 MVP / P1 内**（代码里已标 `P1` / `P2`）：硬件加速、深色模式、字幕与多音轨保留、画面裁剪/缩放、断点续传、队列持久化。
 完整的下一阶段排序、每项的范围与验收标准见 **[docs/ROADMAP-P1.md](docs/ROADMAP-P1.md)**，
-逐条状态见 [docs/BACKLOG.md](docs/BACKLOG.md)。
+逐条状态见 [docs/BACKLOG.md](docs/BACKLOG.md)，
+**下一步选哪项**见 [docs/EXTENSIONS.md](docs/EXTENSIONS.md)（27 项候选按优先级编号）。
 
 ---
 
@@ -103,6 +104,7 @@ pnpm dev
 └── docs/
     ├── BACKLOG.md               P1 / P2 清单
     ├── ROADMAP-P1.md            MVP 之后的扩展规划（排序 / 范围 / 验收标准）
+    ├── EXTENSIONS.md            拓展功能全景（已完成 / 待完成 27 项按优先级编号）
     ├── regression-report.md     32 组合回归结果（脚本生成）
     └── screenshots/             打包态五页 + P1 迭代（队列 / 批次）截图（CDP 抓取）
 ```
