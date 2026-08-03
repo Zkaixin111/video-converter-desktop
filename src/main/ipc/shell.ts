@@ -15,10 +15,17 @@ export function registerShellIpc(getWindow: () => BrowserWindow | null): void {
   /** 传文件 → 在资源管理器中选中它；传目录 → 直接打开 */
   ipcMain.handle(CH.openFolder, (_e, payload: unknown) =>
     wrap<{ ok: boolean }>(async () => {
-      const { path: target } = requireObject(payload, 'payload');
-      const p = requireAbsPath(target, 'path');
+      const obj = requireObject(payload, 'payload');
+      const p = requireAbsPath(obj.path, 'path');
+      // 引导态要用户把二进制放进一个「还没建出来的目录」，
+      // 这时打开失败是产品造成的，不是用户操作错了 —— 所以允许顺手建出来。
+      const mkdir = obj.mkdir === true;
 
-      const stat = await fs.stat(p).catch(() => null);
+      let stat = await fs.stat(p).catch(() => null);
+      if (!stat && mkdir) {
+        await fs.mkdir(p, { recursive: true });
+        stat = await fs.stat(p).catch(() => null);
+      }
       if (!stat) throw new AppError('E_FILE_NOT_FOUND', '这个路径已经不存在了。', { detail: p });
 
       if (stat.isDirectory()) {

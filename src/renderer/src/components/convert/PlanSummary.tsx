@@ -71,6 +71,10 @@ export function PlanSummary({ plan, degraded = false }: PlanSummaryProps): React
       ? `画质档位：${tierName}（来自参数预设）`
       : null;
 
+  // 精细调节改了什么（越界钳值、编码器回落…）由 planner 写进 quality.notes，
+  // 这里如实列出 —— 「保存成功但悄悄被改掉」是最伤信任的一类行为。
+  const qualityNotes = plan?.quality?.notes ?? [];
+
   return (
     <div>
       {/* key 让 React 在模式变化时重建节点，避免属性补间造成的高度抖动 */}
@@ -82,9 +86,12 @@ export function PlanSummary({ plan, degraded = false }: PlanSummaryProps): React
         </div>
       </div>
 
-      {tierNote || warnings.length > 0 ? (
+      {tierNote || qualityNotes.length > 0 || warnings.length > 0 ? (
         <div className="banner-warnings">
           {tierNote ? <span key="tier">· {tierNote}</span> : null}
+          {qualityNotes.map((n) => (
+            <span key={`q-${n}`}>· {n}</span>
+          ))}
           {warnings.map((w) => (
             <span key={w.code}>· {w.message}</span>
           ))}

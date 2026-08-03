@@ -4,6 +4,8 @@
    设计 Token —— 与 prototype/index.html §1 完全一致，一个数值都没有改
    =========================================================================== */
 :root {
+  color-scheme: light;
+
   --primary-50: #eef3fe;
   --primary-100: #dce7fd;
   --primary-400: #6b93f5;
@@ -19,6 +21,14 @@
   --text-primary: #1a1f2b;
   --text-secondary: #5a6478;
   --text-tertiary: #8a93a6;
+  --text-disabled: #b4bccc;
+
+  /* 控件中性色：开关轨道与滑块底色、滚动条、进度槽 */
+  --control-off: #d3d8e2;
+  --control-knob: #ffffff;
+  --track: #edf0f5;
+  --scrollbar-thumb: #c9d0dc;
+  --scrollbar-thumb-hover: #b4bccc;
 
   --success: #16a34a;
   --success-bg: #ecfdf3;
@@ -89,7 +99,58 @@
   --radius-2xl: var(--r-2xl);
 }
 
-/* 深色 Token 预埋（本轮不启用，与原型一致） */
+/* ---------------------------------------------------------------------------
+   深色 Token（TODO-06）
+   直接覆盖同一批变量名 —— @theme inline 里全是 var(--xx) 的直接引用，
+   所以这里换值即可，不需要再维护一套 Tailwind 主题。
+   --------------------------------------------------------------------------- */
+/* 让原生控件（滚动条、下拉箭头、日期输入）跟着一起变暗 */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --primary-50: #1a2338;
+  --primary-100: #22304d;
+  --primary-400: #7fa0ff;
+  --primary-500: #5b86f7;
+  --primary-600: #4b74e0;
+  --primary-700: #3c5cba;
+
+  --bg-app: #0f1115;
+  --bg-surface: #171a21;
+  --bg-subtle: #1e222b;
+  --border-default: #2a2f3a;
+  --border-strong: #3a4150;
+  --text-primary: #e6e9ef;
+  --text-secondary: #a4adbe;
+  --text-tertiary: #7c8598;
+  --text-disabled: #5b6478;
+
+  --control-off: #3a4150;
+  --control-knob: #dbe2ee;
+  --track: #262b35;
+  --scrollbar-thumb: #3a4150;
+  --scrollbar-thumb-hover: #4b5464;
+
+  --success: #4ade80;
+  --success-bg: #10241a;
+  --success-border: #1f4a33;
+  --warn: #fbbf24;
+  --warn-bg: #2a2113;
+  --warn-border: #4d3a17;
+  --accent: #fb923c;
+  --accent-bg: #2a1a10;
+  --accent-border: #4d2c17;
+  --danger: #f87171;
+  --danger-bg: #2a1414;
+  --danger-border: #4d1f1f;
+
+  /* 深色下阴影更"看不见"，靠描边区分层级 */
+  --sh-xs: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --sh-sm: 0 1px 3px rgba(0, 0, 0, 0.36), 0 1px 2px rgba(0, 0, 0, 0.24);
+  --sh-md: 0 4px 12px rgba(0, 0, 0, 0.42);
+  --sh-lg: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --sh-focus: 0 0 0 3px rgba(91, 134, 247, 0.28);
+}
 
 /* ===========================================================================
    基础
@@ -349,11 +410,11 @@ svg {
   width: 8px;
 }
 .content::-webkit-scrollbar-thumb {
-  background: #c9d0dc;
+  background: var(--scrollbar-thumb);
   border-radius: 4px;
 }
 .content::-webkit-scrollbar-thumb:hover {
-  background: #b4bccc;
+  background: var(--scrollbar-thumb-hover);
 }
 .content::-webkit-scrollbar-track {
   background: transparent;
@@ -559,7 +620,7 @@ svg {
   background: var(--primary-50);
 }
 .win.is-dragover .dropzone .dz-icon {
-  background: #fff;
+  background: var(--control-knob);
   transform: translateY(-4px);
 }
 .win.is-dragover .dropzone .dz-title {
@@ -620,11 +681,11 @@ svg {
   height: 90px;
   flex: none;
   border-radius: var(--r-md);
-  background: #edf0f5;
+  background: var(--track);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: #b4bccc;
+  color: var(--text-disabled);
   overflow: hidden;
 }
 .thumb svg {
@@ -1831,7 +1892,7 @@ svg {
   box-shadow: var(--sh-xs);
 }
 .segmented button:disabled {
-  color: #b4bccc;
+  color: var(--text-disabled);
   cursor: not-allowed;
 }
 
@@ -1839,7 +1900,7 @@ svg {
   width: 36px;
   height: 20px;
   border-radius: 10px;
-  background: #d3d8e2;
+  background: var(--control-off);
   position: relative;
   flex: none;
   transition: background var(--t-fast) var(--ease);
@@ -1851,7 +1912,7 @@ svg {
   width: 16px;
   height: 16px;
   border-radius: 50%;
-  background: #fff;
+  background: var(--control-knob);
   box-shadow: 0 1px 2px rgba(15, 23, 42, 0.2);
   transition: transform var(--t-fast) var(--ease);
 }
@@ -1876,6 +1937,10 @@ svg {
   background-repeat: no-repeat;
   background-position: right 9px center;
   transition: border-color var(--t-fast) var(--ease);
+}
+/* 下拉箭头是内联 SVG，颜色写死在 data URI 里，深色下会糊掉 —— 单独换一版 */
+[data-theme='dark'] .select {
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23A4ADBE' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
 .select:hover {
   border-color: var(--primary-400);
@@ -2161,10 +2226,137 @@ svg {
   }
 }
 
+/* ---------------------------------------------------------------------------
+   输出位置的磁盘账（转换页）
+   --------------------------------------------------------------------------- */
+.disk-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 0;
+  padding: 8px 10px;
+  font-size: 12px;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-md);
+}
+
+.disk-row.is-short {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+
+/* ===========================================================================
+   动效偏好降级
+   =========================================================================== */
+
+/* ---------------------------------------------------------------------------
+   参数预设页 · 精细调节（手动画质参数）
+   折叠式：默认收起来，只给「精细调节」一个入口，免得 8 张卡片被表单撑爆。
+   --------------------------------------------------------------------------- */
+.adv {
+  margin-top: 12px;
+  border-top: 1px solid var(--border-default);
+  padding-top: 10px;
+}
+
+.adv-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 0;
+  font-size: 13px;
+  color: var(--text-secondary);
+  background: none;
+  border: 0;
+  cursor: pointer;
+  transition: color var(--t-fast) var(--ease);
+}
+
+.adv-toggle:hover {
+  color: var(--primary-600);
+}
+
+.adv-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 10px 14px;
+  margin-top: 10px;
+  padding: 12px;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-default);
+  border-radius: var(--r-lg);
+}
+
+.adv-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text-secondary);
+}
+
+.adv-field select,
+.adv-field input {
+  height: 30px;
+  padding: 0 8px;
+  font-size: 13px;
+  color: var(--text-primary);
+  background: var(--bg-surface);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-md);
+}
+
+.adv-field select:disabled,
+.adv-field input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.adv-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.adv-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.adv-on {
+  margin-left: auto;
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--primary-600);
+  background: var(--primary-50);
+  border-radius: var(--r-sm);
+}
+
+.btn-primary-sm {
+  padding: 6px 14px;
+  font-size: 13px;
+  color: #fff;
+  background: var(--primary-500);
+  border: 0;
+  border-radius: var(--r-md);
+  cursor: pointer;
+  transition: background var(--t-fast) var(--ease);
+}
+
+.btn-primary-sm:hover {
+  background: var(--primary-600);
+}
+
 /* ===========================================================================
    动效偏好降级
    =========================================================================== */
 @media (prefers-reduced-motion: reduce) {
+
   *,
   *::before,
   *::after {

@@ -9,8 +9,10 @@
 import { BrowserWindow, ipcMain } from 'electron';
 import { CH, EV } from '../../shared/channels';
 import { CONTAINER_ORDER, isContainerKey, isPresetTier } from '../../shared/containers';
+import path from 'node:path';
 import { AppError } from '../../shared/errors';
 import { resolveTaskParams } from '../../shared/queue';
+import { estimateOutputBytes, formatBytes } from '../../shared/estimate';
 import type {
   ContainerKey,
   EnqueueItemInput,
@@ -21,6 +23,7 @@ import type {
   QueueSnapshot,
   TaskParams,
 } from '../../shared/types';
+import { checkSpace } from '../core/fs/disk';
 import { jobManager } from '../core/job/JobManager';
 import { historyStore } from '../history';
 import { logger } from '../logger';
@@ -91,6 +94,12 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
   jobManager.configure({
     getPolicy: () => getSettings().failurePolicy,
     getMode: () => getSettings().queueMode,
+    // 精细调节按目标格式读设置；主进程读一次就够了，不需要渲染层再传一遍
+    getOverrides: (target: ContainerKey) => {
+      const q = getSettings().quality?.[target];
+      return q && q.enabled ? q : null;
+    },
+    getNaming: () => getSettings().naming,
   });
 
   jobManager.attach({
@@ -152,6 +161,31 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
           outputDir: typeof outputDir === 'string' && outputDir ? outputDir : null,
         };
       });
+
+      // 磁盘预检（TODO-03）：批量转换时空间不够是「整批全废」，比单文件失败代价高得多。
+      // 这里按最坏情况（全部重编码）估算，宁可多拦一次。
+      const required = inputs.reduce(
+        (sum, i) =>
+          sum +
+          estimateOutputBytes({
+            sourceSizeBytes: i.meta.sizeBytes,
+            mode: 'transcode',
+            target: i.target,
+            preset: i.preset,
+          }),
+        0,
+      );
+      const space = checkSpace(
+        (typeof outputDir === 'string' && outputDir ? outputDir : path.dirname(inputs[0].meta.path)) as string,
+        required,
+      );
+      if (!space.enough) {
+        throw new AppError(
+          'E_DISK_FULL',
+          `输出位置空间不足：这 ${inputs.length} 个文件预计需要约 ${formatBytes(required)}，当前可用 ${formatBytes(space.freeBytes ?? 0)}。`,
+          { hint: `请至少清理 ${formatBytes(space.shortfallBytes)}，或换一个保存位置。` },
+        );
+      }
 
       return jobManager.enqueue(inputs).map((r) => r.item);
     }),

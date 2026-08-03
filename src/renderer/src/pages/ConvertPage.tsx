@@ -9,10 +9,11 @@
  *   · 2 个及以上 → 换成批次列表 + 汇总判定条，整批共用同一个目标格式
  *   · 无论几个，「加入下一个视频 / 一次选多个」的入口都在同一位置，上限 10 个
  */
-import type { ReactElement } from 'react';
+import { useMemo, type ReactElement } from 'react';
 import { MAX_BATCH_TOTAL } from '../../../shared/batch';
 import { CONTAINERS } from '../../../shared/containers';
-import { useAppStore } from '../store/useAppStore';
+import { formatBytes } from '../../../shared/estimate';
+import { batchDiskUsage, useAppStore } from '../store/useAppStore';
 import { DropZone } from '../components/convert/DropZone';
 import { MediaCard } from '../components/convert/MediaCard';
 import { TargetPicker } from '../components/convert/TargetPicker';
@@ -28,6 +29,7 @@ import { Icon } from '../components/ui/Icon';
 function GuideCard(): ReactElement {
   const caps = useAppStore((s) => s.caps);
   const recheck = useAppStore((s) => s.recheckCaps);
+  const toast = useAppStore((s) => s.toast);
   const missing = caps?.ffmpeg.missing ?? [];
   const ffmpegPath = caps?.ffmpeg.ffmpegPath ?? '';
   const dir = ffmpegPath ? ffmpegPath.replace(/[\\/][^\\/]+$/, '') : '';
@@ -50,7 +52,21 @@ function GuideCard(): ReactElement {
       </div>
       {dir ? <div className="guide-path">目录：{dir}</div> : null}
       <div className="guide-actions">
-        <Button variant="secondary" onClick={() => void recheck()}>
+        {/* 直接把目录打开：让用户不用手抄一长串路径，也避免抄错盘符 */}
+        {dir ? (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void window.api.openFolder(dir, true).then((res) => {
+                if (!res.ok) toast(res.error.message, 'error');
+              });
+            }}
+          >
+            <Icon name="i-folder" />
+            打开该目录
+          </Button>
+        ) : null}
+        <Button variant="primary" onClick={() => void recheck()}>
           <Icon name="i-refresh" />
           重新检测
         </Button>
@@ -96,6 +112,13 @@ export function ConvertPage(): ReactElement {
   const count = batch.length;
   const full = count >= MAX_BATCH_TOTAL;
   const multi = count > 1;
+
+  /**
+   * 磁盘预检（TODO-03）。
+   * 单个文件看着够用、整批加起来不够 —— 这正是批量场景要拦的账，
+   * 所以在转换页就把整批的预估空间算好，不够直接不让开始。
+   */
+  const disk = useMemo(() => batchDiskUsage(batch), [batch]);
 
   return (
     <section className="page" aria-label="转换">
@@ -172,8 +195,23 @@ export function ConvertPage(): ReactElement {
                 </button>
               </div>
 
+              {/* 空间不够时说明差多少：转一半写满盘 = 前面几个文件全白转 */}
+              {disk.free !== null ? (
+                <div className={`disk-row${disk.enough ? '' : ' is-short'}`}>
+                  <Icon name={disk.enough ? 'i-info' : 'i-alert'} />
+                  {disk.enough
+                    ? `预计需要约 ${formatBytes(disk.required)}，当前位置可用 ${formatBytes(disk.free)}`
+                    : `空间不足：预计需要 ${formatBytes(disk.required)}，当前可用 ${formatBytes(disk.free)}，还差 ${formatBytes(disk.short)}。请先清理或换个保存位置。`}
+                </div>
+              ) : null}
+
               <div className="action-row">
-                <Button variant="primary" size="lg" disabled={busy} onClick={() => void start()}>
+                <Button
+                  variant="primary"
+                  size="lg"
+                  disabled={busy || !disk.enough}
+                  onClick={() => void start()}
+                >
                   {busy ? '正在准备…' : multi ? `开始转换 ${count} 个视频` : '开始转换'}
                 </Button>
               </div>

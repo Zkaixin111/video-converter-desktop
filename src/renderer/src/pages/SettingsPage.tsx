@@ -4,12 +4,39 @@
  * 真生效的三项：默认保存位置、默认输出格式、完成后打开文件夹、界面密度（共四项）。
  * 主题与性能区按原型置灰并标注「后续版本」，不做假的开关。
  */
-import type { ReactElement } from 'react';
+import { useState, type ReactElement } from 'react';
 import { CONTAINERS, CONTAINER_ORDER } from '../../../shared/containers';
-import type { ContainerKey } from '../../../shared/types';
+import { DEFAULT_TEMPLATE, NAMING_CONFLICTS, NAMING_TOKENS, buildTokens, renderOutputName } from '../../../shared/outputName';
+import type { ConflictPolicy, ContainerKey, ThemeMode } from '../../../shared/types';
 import { call, messageOf } from '../lib/api';
 import { useAppStore } from '../store/useAppStore';
 import { Icon } from '../components/ui/Icon';
+
+const THEME_MODES: ThemeMode[] = ['light', 'dark', 'system'];
+
+const THEME_LABEL: Record<ThemeMode, string> = {
+  light: '浅色',
+  dark: '深色',
+  system: '跟随系统',
+};
+
+const THEME_TOAST: Record<ThemeMode, string> = {
+  light: '已切换到浅色主题',
+  dark: '已切换到深色主题',
+  system: '主题将跟随系统设置即时变化',
+};
+
+const CONFLICT_LABEL: Record<ConflictPolicy, string> = {
+  rename: '自动加序号',
+  overwrite: '直接覆盖',
+  skip: '跳过该文件',
+};
+
+const CONFLICT_TOAST: Record<ConflictPolicy, string> = {
+  rename: '重名时会自动加序号另存',
+  overwrite: '重名时会覆盖已有文件',
+  skip: '重名时会跳过该文件（不生成任务）',
+};
 
 export function SettingsPage(): ReactElement {
   const settings = useAppStore((s) => s.settings);
@@ -18,6 +45,42 @@ export function SettingsPage(): ReactElement {
   const toast = useAppStore((s) => s.toast);
 
   const engineVersion = caps?.ffmpeg.version ?? '未检测到';
+
+  // 模板输入框用草稿态：每敲一个键就写设置会导致整应用重算判定，
+  // 而且半成品模板（比如刚删到只剩 `{`）没有意义。
+  const [templateDraft, setTemplateDraft] = useState<string | null>(null);
+  const currentTemplate = settings?.naming.template ?? DEFAULT_TEMPLATE;
+
+  /** 预览用一个固定时间与假想的源文件，保证「所见即所得」且不受本机文件影响 */
+  const previewName = `${renderOutputName(templateDraft ?? currentTemplate, {
+    ...buildTokens({
+      sourcePath: 'C:////家庭录像////家庭录像.mp4',
+      targetLabel: 'MP4',
+      preset: 'standard',
+      index: 2,
+      total: 12,
+      now: new Date(2026, 9, 18, 9, 30),
+    }),
+  })}.mp4`;
+
+  const commitTemplate = async (): Promise<void> => {
+    if (templateDraft === null || templateDraft.trim() === currentTemplate) {
+      setTemplateDraft(null);
+      return;
+    }
+    const next = templateDraft.trim();
+    const fallback = settings?.naming ?? { template: DEFAULT_TEMPLATE, conflict: 'rename' as ConflictPolicy };
+    await update({ naming: { ...fallback, template: next || DEFAULT_TEMPLATE } });
+    setTemplateDraft(null);
+    toast(next ? '命名模板已更新' : '已恢复默认命名模板', 'success');
+  };
+
+  const resetTemplate = async (): Promise<void> => {
+    const fallback = settings?.naming ?? { template: DEFAULT_TEMPLATE, conflict: 'rename' as ConflictPolicy };
+    await update({ naming: { ...fallback, template: DEFAULT_TEMPLATE } });
+    setTemplateDraft(null);
+    toast('已恢复默认命名模板', 'info');
+  };
 
   const pickSavePath = async (): Promise<void> => {
     try {
@@ -89,6 +152,70 @@ export function SettingsPage(): ReactElement {
           >
             <i />
           </button>
+        </div>
+      </div>
+
+      <div className="section-label">输出文件</div>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">文件命名模板</div>
+            <div className="s-desc">
+              可用占位符：{NAMING_TOKENS.join(' · ')}。识别不了的占位符会原样保留。
+              留空或渲染结果非法时使用默认模板 {'{name}_converted'}。
+            </div>
+          </div>
+          <input
+            className="select"
+            style={{ minWidth: 240 }}
+            value={templateDraft ?? settings?.naming.template ?? DEFAULT_TEMPLATE}
+            placeholder={DEFAULT_TEMPLATE}
+            aria-label="文件命名模板"
+            onChange={(e) => setTemplateDraft(e.target.value)}
+            onBlur={() => void commitTemplate()}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') void commitTemplate();
+            }}
+          />
+        </div>
+
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">命名预览</div>
+            <div className="s-desc">
+              以「家庭录像.mp4 → MP4」为例：
+              <span className="mono"> {previewName}</span>
+            </div>
+          </div>
+          <button type="button" className="btn-text" onClick={() => void resetTemplate()}>
+            恢复默认
+          </button>
+        </div>
+
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">输出文件重名时</div>
+            <div className="s-desc">
+              自动加序号：另存为 xxx_1.mp4 · 直接覆盖：替换已有文件（源文件本身永远不会被覆盖） ·
+              跳过：这个文件不生成任务
+            </div>
+          </div>
+          <div className="segmented" role="group" aria-label="输出文件重名时">
+            {NAMING_CONFLICTS.map((policy) => (
+              <button
+                key={policy}
+                type="button"
+                aria-pressed={(settings?.naming.conflict ?? 'rename') === policy}
+                onClick={() => {
+                  if ((settings?.naming.conflict ?? 'rename') === policy) return;
+                  void update({ naming: { ...settings!.naming, conflict: policy } });
+                  toast(CONFLICT_TOAST[policy], 'info');
+                }}
+              >
+                {CONFLICT_LABEL[policy]}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -169,18 +296,23 @@ export function SettingsPage(): ReactElement {
         <div className="setting-row">
           <div className="s-body">
             <div className="s-name">主题</div>
-            <div className="s-desc">深色模式将在后续版本提供</div>
+            <div className="s-desc">跟随系统会随系统主题即时变化，不用重启</div>
           </div>
           <div className="segmented" role="group" aria-label="主题">
-            <button type="button" aria-pressed onClick={() => toast('当前为浅色主题', 'info')}>
-              浅色
-            </button>
-            <button type="button" disabled aria-pressed={false}>
-              深色
-            </button>
-            <button type="button" disabled aria-pressed={false}>
-              跟随系统
-            </button>
+            {THEME_MODES.map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={(settings?.theme ?? 'light') === mode}
+                onClick={() => {
+                  if ((settings?.theme ?? 'light') === mode) return;
+                  void update({ theme: mode });
+                  toast(THEME_TOAST[mode], 'info');
+                }}
+              >
+                {THEME_LABEL[mode]}
+              </button>
+            ))}
           </div>
         </div>
 

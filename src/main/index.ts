@@ -2,6 +2,7 @@ import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { verifyBinaries } from './core/ffmpeg/paths';
 import { jobManager } from './core/job/JobManager';
+import { applyNativeTheme, windowBackgroundColor } from './ipc/app';
 import { registerAllIpc } from './ipc';
 import { logger } from './logger';
 
@@ -44,7 +45,8 @@ function createWindow(): void {
     // 若用系统边框，界面里会同时出现两套最小化/关闭按钮。
     frame: false,
     autoHideMenuBar: true,
-    backgroundColor: '#F7F8FA',
+    // 与当前主题一致：深色用户不该在启动瞬间看到一帧白底
+    backgroundColor: windowBackgroundColor(),
     title: '视频转换器',
     webPreferences: {
       // sandbox 模式下 preload 必须是 CJS，故这里是 preload.cjs
@@ -108,6 +110,7 @@ if (!gotTheLock) {
 
   app.whenReady().then(async () => {
     registerAllIpc(getWindow);
+    applyNativeTheme();
 
     // 自检不阻断启动：缺 ffmpeg 时主界面进引导态，而不是打不开
     const check = await verifyBinaries().catch((err) => {

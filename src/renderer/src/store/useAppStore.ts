@@ -50,6 +50,9 @@ export interface BatchEntry {
   meta: MediaMeta;
   plan: PlanResult | null;
   outputPath: string;
+  /** 磁盘预检：这条预计要写多少 / 目标位置还剩多少（TODO-03） */
+  requiredBytes: number;
+  freeBytes: number | null;
 }
 
 interface AppState {
@@ -187,10 +190,30 @@ async function probeOne(
   settings: Settings | null,
 ): Promise<BatchEntry> {
   const meta = await call(window.api.probe(path));
-  const { plan, outputPath } = await call(
+  const { plan, outputPath, disk } = await call(
     window.api.preview(meta, target, outputDir, presetFor(settings, target)),
   );
-  return { meta, plan, outputPath };
+  return {
+    meta,
+    plan,
+    outputPath,
+    requiredBytes: disk.requiredBytes,
+    freeBytes: disk.freeBytes,
+  };
+}
+
+/**
+ * 整批的磁盘账：预估值求和，可用空间取任意一条查到的值（同一输出位置）。
+ *
+ * 单独看每个文件都够用，加在一起不够 —— 这正是批量场景要拦的情况。
+ */
+export function batchDiskUsage(
+  batch: BatchEntry[],
+): { required: number; free: number | null; short: number; enough: boolean } {
+  const required = batch.reduce((sum, e) => sum + e.requiredBytes, 0);
+  const free = batch.find((e) => e.freeBytes !== null)?.freeBytes ?? null;
+  const short = free === null ? 0 : Math.max(0, required - free);
+  return { required, free, short, enough: short === 0 };
 }
 
 /** 缩略图是「锦上添花」：失败不影响任何流程，所以不 await、不抛错 */
@@ -553,10 +576,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       const preset = presetFor(settings, target);
       const next = await Promise.all(
         batch.map(async (entry) => {
-          const { plan, outputPath } = await call(
+          const { plan, outputPath, disk } = await call(
             window.api.preview(entry.meta, target, outputDir, preset),
           );
-          return { ...entry, plan, outputPath };
+          return {
+            ...entry,
+            plan,
+            outputPath,
+            requiredBytes: disk.requiredBytes,
+            freeBytes: disk.freeBytes,
+          };
         }),
       );
       // 期间用户可能又切了格式，只接受最后一次
@@ -580,10 +609,16 @@ export const useAppStore = create<AppState>((set, get) => ({
         const preset = presetFor(settings, target);
         const next = await Promise.all(
           batch.map(async (entry) => {
-            const { plan, outputPath } = await call(
+            const { plan, outputPath, disk } = await call(
               window.api.preview(entry.meta, target, path, preset),
             );
-            return { ...entry, plan, outputPath };
+            return {
+              ...entry,
+              plan,
+              outputPath,
+              requiredBytes: disk.requiredBytes,
+              freeBytes: disk.freeBytes,
+            };
           }),
         );
         const primary = next[0];

@@ -1,8 +1,9 @@
 /** app:* / window:* —— 能力自检、设置、剪贴板、窗口控制 */
-import { BrowserWindow, clipboard, ipcMain } from 'electron';
+import { BrowserWindow, clipboard, ipcMain, nativeTheme } from 'electron';
 import { CH, type WindowAction } from '../../shared/channels';
 import { AppError } from '../../shared/errors';
 import type { Capabilities, Settings } from '../../shared/types';
+import { windowBackgroundOf } from '../../shared/theme';
 import { toCapabilities, verifyBinaries } from '../core/ffmpeg/paths';
 import { getSettings, updateSettings } from '../store';
 import { requireObject, requireString, wrap } from './wrap';
@@ -25,7 +26,10 @@ export function registerAppIpc(getWindow: () => BrowserWindow | null): void {
     wrap<Settings>(() => {
       const { patch } = requireObject(payload, 'payload');
       const p = requireObject(patch, 'patch');
-      return updateSettings(p as Partial<Settings>);
+      const next = updateSettings(p as Partial<Settings>);
+      // 原生窗口与系统对话框也要跟上：否则会出现「界面是深色、打开文件对话框是白的」
+      if (next.theme) nativeTheme.themeSource = next.theme;
+      return next;
     }),
   );
 
@@ -65,4 +69,23 @@ export function registerAppIpc(getWindow: () => BrowserWindow | null): void {
 
 export function isMaximized(win: BrowserWindow | null): boolean {
   return win?.isMaximized() ?? false;
+}
+
+/** 启动时把主题同步给原生层（渲染层自己会读设置，这里只管 nativeTheme） */
+export function applyNativeTheme(): void {
+  try {
+    nativeTheme.themeSource = getSettings().theme ?? 'light';
+  } catch {
+    /* 主题不该挡住启动 */
+  }
+}
+
+/** 供 main/index.ts 在创建窗口时取背景色，避免深色用户看到一帧白闪 */
+export function windowBackgroundColor(): string {
+  try {
+    return windowBackgroundOf(getSettings().theme, nativeTheme.shouldUseDarkColors);
+  } catch {
+    /* 取不到就用浅色 */
+  }
+  return windowBackgroundOf('light', false);
 }

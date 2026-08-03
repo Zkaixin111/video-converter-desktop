@@ -1,5 +1,7 @@
 # 视频转换器（Video Converter Desktop）
 
+[![CI](https://github.com/Zkaixin111/video-converter-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/Zkaixin111/video-converter-desktop/actions/workflows/ci.yml)
+
 本地视频格式转换桌面客户端。拖入一个或多个视频，选一个目标格式，应用负责两件事：
 **让它一定能用**，以及**告诉你为什么之前不行**。
 

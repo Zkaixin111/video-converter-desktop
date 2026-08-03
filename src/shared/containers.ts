@@ -7,7 +7,7 @@
  * ⚠️ `defaultVideo` 必须在该容器的 `videoCodecs` 白名单内，
  *    `defaultAudio` 同理（由 containers.test.ts 守护）。
  */
-import type { ContainerKey, PresetTier } from './types';
+import type { ContainerKey, PresetTier, QualityOverrides, QualitySpec } from './types';
 
 export interface ContainerSpec {
   /** UI 上显示的短名 */
@@ -284,4 +284,127 @@ export function buildVideoQualityArgs(
 export function audioBitrateFor(encoder: string, tier: QualityTier = 'standard'): string {
   const table = AUDIO_BITRATE_BY_TIER[tier];
   return table[encoder] ?? table.aac;
+}
+
+/* ──────────────────────────────────────────────────────────
+ * 精细调节（手动画质参数）
+ *
+ * 放在这里而不是 planner 里，是为了让「填了非法值会怎样」能被单测覆盖——
+ * 这类 "在 UI 上看起来保存成功、实际被悄悄改掉" 的逻辑最容易变成 bug 温床。
+ * ────────────────────────────────────────────────────────── */
+
+/** 支持 CRF 范围的编码器（x264/x265 上限 51，VP9/AV1 上限 63） */
+const CRF_MAX: Record<string, number> = { libx264: 51, libx265: 51, 'libvpx-vp9': 63, libsvtav1: 63 };
+
+/** 认 `-preset` 的编码器：只有这两家，别的传了会直接报错 */
+const SPEED_ENCODERS = new Set(['libx264', 'libx265']);
+
+export const SPEED_PRESETS = [
+  'ultrafast',
+  'veryfast',
+  'fast',
+  'medium',
+  'slow',
+  'veryslow',
+] as const;
+
+/** 精细调节里可选的编码器：必须是「容器认它的产物」且在本机 ffmpeg 里常见 */
+export const ENCODER_CHOICES = [
+  'libx264',
+  'libx265',
+  'libvpx-vp9',
+  'mpeg4',
+  'mpeg2video',
+  'wmv2',
+] as const;
+
+const AUDIO_BITRATE_RE = /^\d{1,4}k$/;
+
+export interface ResolveQualityInput {
+  /** 容器默认视频编码器 */
+  defaultEncoder: string;
+  /** 容器默认音频编码器（决定音频码率取值区间） */
+  defaultAudio: string;
+  /** 该容器接受的 codec_name 列表（决定自定义编码器能不能用） */
+  videoCodecs: string[];
+  srcBitrateKbps: number | null;
+  tier: QualityTier;
+  overrides?: unknown;
+}
+
+/**
+ * 档位 + 手工参数 → 最终编码参数。
+ *
+ * 四条处理原则：
+ *   1. 没给 overrides（或没启用）→ 结果与三档完全一致
+ *   2. 越界数值被**钳住而不是报错**，并把改了什么写进 notes —— UI 要把这件事说清楚
+ *   3. 容器不支持所选编码器 → 回落默认编码器，同样留一条 note
+ *   4. CRF 与码率互斥：**给了 CRF 就按 CRF**（并用 notes 说明码率被忽略）
+ */
+export function resolveQuality(input: ResolveQualityInput): QualitySpec {
+  const { defaultEncoder, defaultAudio, videoCodecs, srcBitrateKbps, tier } = input;
+  const raw = (input.overrides ?? null) as QualityOverrides | null;
+  const ov = raw && raw.enabled ? raw : null;
+  const notes: string[] = [];
+
+  /* 编码器 */
+  let encoder = defaultEncoder;
+  if (ov?.videoEncoder) {
+    const wanted = ov.videoEncoder;
+    const produced = ENCODER_CODEC[wanted] ?? wanted;
+    if (videoCodecs.includes(produced)) {
+      encoder = wanted;
+    } else {
+      notes.push(`该格式不支持 ${wanted}，已改用默认编码器 ${defaultEncoder}`);
+    }
+  }
+
+  /* 视频码率 / CRF */
+  let crf: number | null = null;
+  let bitrateKbps: number | null = null;
+  if (CRF_ENCODERS.has(encoder)) {
+    if (typeof ov?.crf === 'number' && Number.isFinite(ov.crf)) {
+      const max = CRF_MAX[encoder] ?? 51;
+      const wanted = Math.round(ov.crf);
+      crf = Math.min(max, Math.max(0, wanted));
+      if (crf !== wanted) notes.push(`CRF 已钳到合法区间 0–${max}（原值 ${wanted}）`);
+      if (typeof ov?.videoBitrateKbps === 'number') notes.push('目标码率在 CRF 编码下不生效，已忽略');
+    } else {
+      // 与 buildVideoQualityArgs 保持同一分支，保证档位行为不变
+      crf = CRF_BY_TIER[tier][encoder === 'libx264' ? 'x264' : 'other'];
+    }
+  } else {
+    if (typeof ov?.videoBitrateKbps === 'number' && Number.isFinite(ov.videoBitrateKbps)) {
+      const wanted = Math.round(ov.videoBitrateKbps);
+      bitrateKbps = Math.min(50000, Math.max(100, wanted));
+      if (bitrateKbps !== wanted) notes.push(`目标码率已钳到 100–50000k（原值 ${wanted}）`);
+    } else {
+      const factor = BITRATE_FACTOR_BY_TIER[tier];
+      bitrateKbps = Math.min(8000, Math.max(800, Math.round((srcBitrateKbps ?? 2500) * factor)));
+    }
+  }
+
+  /* 音频码率：按容器的默认音频编码器取值 */
+  let audioBitrate = audioBitrateFor(defaultAudio, tier);
+  if (typeof ov?.audioBitrate === 'string' && AUDIO_BITRATE_RE.test(ov.audioBitrate)) {
+    audioBitrate = ov.audioBitrate;
+  } else if (ov?.audioBitrate) {
+    notes.push('音频码率格式应为 128k 这样的写法，已按档位取值');
+  }
+
+  /* 编码速度 */
+  let speedPreset: string | null = null;
+  if (SPEED_ENCODERS.has(encoder)) {
+    const wanted = typeof ov?.speed === 'string' ? ov.speed : 'veryfast';
+    speedPreset = SPEED_PRESETS.includes(wanted as (typeof SPEED_PRESETS)[number])
+      ? wanted
+      : 'veryfast';
+    if (typeof ov?.speed === 'string' && speedPreset !== ov.speed) {
+      notes.push('编码速度取值无效，已回落到 veryfast');
+    }
+  } else if (ov?.speed) {
+    notes.push(`${encoder} 不支持调节编码速度，该设置被忽略`);
+  }
+
+  return { encoder, crf, bitrateKbps, audioBitrate, speedPreset, notes };
 }

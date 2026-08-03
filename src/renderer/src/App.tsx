@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { cn } from './lib/cn';
 import { useFileDrop } from './hooks/useFileDrop';
+import { useTheme } from './hooks/useTheme';
 import { useAppStore, type Page } from './store/useAppStore';
 import { TitleBar } from './components/layout/TitleBar';
 import { Sidebar } from './components/layout/Sidebar';
@@ -35,6 +36,8 @@ export default function App(): ReactElement {
   const setPage = useAppStore((s) => s.setPage);
 
   const dragging = useFileDrop();
+  // 主题只改 <html data-theme> 一个属性（深色 Token 全挂在它下面）
+  useTheme();
   const [switching, setSwitching] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const switchTimer = useRef<number | null>(null);

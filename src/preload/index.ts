@@ -12,6 +12,7 @@ import { CH, EV } from '../shared/channels';
 import type {
   Capabilities,
   ContainerKey,
+  DiskEstimate,
   EnqueueItemInput,
   HistoryEntry,
   IpcResult,
@@ -61,7 +62,7 @@ const api = {
     target: ContainerKey,
     outputDir?: string | null,
     preset?: PresetTier,
-  ): Promise<IpcResult<{ plan: PlanResult; outputPath: string }>> =>
+  ): Promise<IpcResult<{ plan: PlanResult; outputPath: string; disk: DiskEstimate }>> =>
     ipcRenderer.invoke(CH.preview, { meta, target, outputDir, preset }),
 
   start: (
@@ -116,8 +117,8 @@ const api = {
   clearHistory: (): Promise<IpcResult<{ ok: boolean }>> => ipcRenderer.invoke(CH.historyClear),
 
   /* ── 系统 ─────────────────────────────────────────────── */
-  openFolder: (path: string): Promise<IpcResult<{ ok: boolean }>> =>
-    ipcRenderer.invoke(CH.openFolder, { path }),
+  openFolder: (path: string, mkdir = false): Promise<IpcResult<{ ok: boolean }>> =>
+    ipcRenderer.invoke(CH.openFolder, { path, mkdir }),
 
   selectOutputDir: (): Promise<IpcResult<{ path: string | null }>> =>
     ipcRenderer.invoke(CH.selectOutputDir),

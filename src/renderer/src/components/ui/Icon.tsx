@@ -106,6 +106,8 @@ const ICONS = {
     </>
   ),
   'i-minus': <line x1="4" y1="12" x2="20" y2="12" />,
+  'i-chevron-right': <polyline points="9 5 16 12 9 19" />,
+  'i-chevron-down': <polyline points="5 9 12 16 19 9" />,
   'i-square': <rect x="5" y="5" width="14" height="14" rx="1" />,
   'i-copy': (
     <>

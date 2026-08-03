@@ -6,6 +6,7 @@
  */
 import Store from 'electron-store';
 import { CONTAINER_ORDER } from '../shared/containers';
+import { DEFAULT_TEMPLATE } from '../shared/outputName';
 import type { ContainerKey, PresetTier, Settings } from '../shared/types';
 
 function defaultPresets(): Record<ContainerKey, PresetTier> {
@@ -20,7 +21,12 @@ export const DEFAULT_SETTINGS: Settings = {
   defaultOutputFormat: 'mp4',
   openFolderAfterDone: true,
   density: 'normal',
+  theme: 'light',
   presets: defaultPresets(),
+  // 精细调节默认全关：配过的格式才按手工参数走，其余与三档行为完全一致
+  quality: {},
+  // 默认模板就是 MVP 的文件名规则，老用户升级后产出文件名不变
+  naming: { template: DEFAULT_TEMPLATE, conflict: 'rename' },
   // 默认「共用全局参数」+「失败继续」：这两条是打扰最小的组合
   queueMode: 'shared',
   failurePolicy: 'continue',
@@ -42,6 +48,9 @@ export function getSettings(): Settings {
     ...DEFAULT_SETTINGS,
     ...saved,
     presets: { ...defaultPresets(), ...(saved?.presets ?? {}) },
+    quality: { ...(saved?.quality ?? {}) },
+    naming: { ...DEFAULT_SETTINGS.naming, ...(saved?.naming ?? {}) },
+    theme: saved?.theme ?? DEFAULT_SETTINGS.theme,
   };
 }
 

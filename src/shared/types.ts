@@ -57,6 +57,41 @@ export interface PlanWarning {
   message: string;
 }
 
+/**
+ * 手动画质参数（精细调节）。
+ *
+ * 全部可选：没填的维度回到档位取值，所以「只改音频码率」不会连带把 CRF 也改掉。
+ * `enabled` 是 UI 的开关位——关掉时整体忽略，省得用户把面板收起来还得先清空数值。
+ */
+export interface QualityOverrides {
+  /** false / undefined = 不走手工参数（保存了值也不生效） */
+  enabled?: boolean;
+  /** 视频编码器名，如 libx264 / mpeg4；容器不支持时会回落到默认编码器并给说明 */
+  videoEncoder?: string;
+  /** CRF：数值越小画质越好。只有在支持 CRF 的编码器上生效，与 `videoBitrateKbps` 互斥 */
+  crf?: number;
+  /** 目标视频码率（kbps）：对不支持 CRF 的编码器生效，钳在 100–50000 */
+  videoBitrateKbps?: number;
+  /** 音频码率，如 `192k`；格式非法时回落到档位值 */
+  audioBitrate?: string;
+  /** 编码速度 `-preset`：只有 x264 / x265 认这个值 */
+  speed?: string;
+}
+
+/** 最终生效的画质参数（planner 算完的结果，UI 与诊断信息据此显示） */
+export interface QualitySpec {
+  encoder: string;
+  /** CRF 模式才有值；码率模式为 null */
+  crf: number | null;
+  /** 码率模式才有值；CRF 模式为 null */
+  bitrateKbps: number | null;
+  audioBitrate: string;
+  /** 只有 x264 / x265 有值 */
+  speedPreset: string | null;
+  /** 用户填的值越界或不被支持时的说明（负责任的 Airbnb 式提示：说清改了什么） */
+  notes: string[];
+}
+
 export interface PlanResult {
   mode: ConversionMode;
   videoAction: 'copy' | 'encode';
@@ -67,6 +102,11 @@ export interface PlanResult {
   estimate: { kind: 'instant' | 'encoded'; approxSeconds: number; qualityNote: string };
   /** 本次判定采用的画质档位（来自参数预设页）；直通模式下它不参与编码 */
   preset: PresetTier;
+  /**
+   * 本次实际生效的编码参数。
+   * 直通模式下 `notes` 里会说明「不经过编码器，以下参数不会被使用」。
+   */
+  quality: QualitySpec;
 }
 
 export type JobStatus =
@@ -230,6 +270,9 @@ export interface Capabilities {
 
 export type PresetTier = 'high' | 'standard' | 'small';
 
+/** 主题模式：`system` 时跟随系统（并在系统切换时立即变化） */
+export type ThemeMode = 'light' | 'dark' | 'system';
+
 export interface Settings {
   /** 默认保存位置；null 表示「源文件同级」 */
   defaultSavePath: string | null;
@@ -237,10 +280,25 @@ export interface Settings {
   openFolderAfterDone: boolean;
   density: 'normal' | 'compact';
   /**
+   * 主题（TODO-06）。
+   * 默认 'light'：与 MVP 的观感逐字一致，深色是用户主动选的，不是升级送的惊喜。
+   */
+  theme: ThemeMode;
+  /**
    * 参数预设页的质量档位。P1 起真实参与编码：
    * 直通（copy）不改编码参数，因此档位对它是空操作。
    */
   presets: Record<ContainerKey, PresetTier>;
+  /**
+   * 精细调节：每种格式的手动画质参数（TODO-01）。
+   * 缺省为空对象 —— 没配过的容器完全按档位走，与老版本逐字节一致。
+   */
+  quality: Partial<Record<ContainerKey, QualityOverrides>>;
+  /**
+   * 输出命名：模板 + 重名策略（TODO-02）。
+   * 默认模板 `{name}_converted` + `rename`，与 MVP 的文件名完全一致。
+   */
+  naming: { template: string; conflict: ConflictPolicy };
   /** 批量队列的输出参数模式；切换只影响后续新增任务 */
   queueMode: QueueMode;
   /** 任务失败后的队列行为 */
@@ -250,4 +308,39 @@ export interface Settings {
 /** 「复制诊断信息」的内容载体，由主进程拼装 */
 export interface Diagnostics {
   text: string;
+}
+
+/**
+ * 输出文件重名时的处理策略。
+ * - `rename`    自动加序号（默认，与 MVP 行为一致）
+ * - `overwrite` 直接覆盖同名文件
+ * - `skip`      跳过该文件（批量时这个文件的任务不生成）
+ */
+export type ConflictPolicy = 'rename' | 'overwrite' | 'skip';
+
+/** 磁盘空间预检结果 */
+export interface DiskEstimate {
+  /** 这次转换预计需要的空间 */
+  requiredBytes: number;
+  /** null = 查不到可用空间（网络盘/权限），调用方按「不阻挡」处理 */
+  freeBytes: number | null;
+  enough: boolean;
+  /** 还差多少字节（充足时为 0） */
+  shortfallBytes: number;
+}
+
+/** 输出命名模板的可替换字段 */
+export interface NamingTokens {
+  /** 源文件名（不含扩展名） */
+  name: string;
+  /** 目标格式短名，如 MP4 */
+  format: string;
+  /** YYYYMMDD */
+  date: string;
+  /** HHmm */
+  time: string;
+  /** 批量序号（已补零）；单文件时为空串 */
+  index: string;
+  /** 画质档位 key */
+  preset: string;
 }

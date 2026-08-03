@@ -7,10 +7,9 @@
  */
 import {
   CONTAINERS,
-  audioBitrateFor,
-  buildVideoQualityArgs,
   isContainerKey,
   isPresetTier,
+  resolveQuality,
 } from '../../../shared/containers';
 import { AppError } from '../../../shared/errors';
 import type {
@@ -20,6 +19,8 @@ import type {
   PlanResult,
   PlanWarning,
   PresetTier,
+  QualityOverrides,
+  QualitySpec,
 } from '../../../shared/types';
 
 export interface PlanInput {
@@ -30,6 +31,8 @@ export interface PlanInput {
     scaleHeight?: number;
     /** 画质档位，来自参数预设页；缺省 standard 与 MVP 行为一致 */
     preset?: PresetTier;
+    /** 精细调节（手动画质参数）；没给或没启用时按档位走 */
+    overrides?: QualityOverrides | null;
   } | null;
 }
 
@@ -87,15 +90,27 @@ export function planConversion(input: PlanInput): PlanResult {
   // 少了这个问号，纯视频文件会直接失败 —— 这是最高频的踩坑点。
   const args: string[] = ['-map', '0:v:0', '-map', '0:a:0?'];
 
+  const quality: QualitySpec = resolveQuality({
+    defaultEncoder: spec.defaultVideo,
+    defaultAudio: spec.defaultAudio,
+    videoCodecs: spec.videoCodecs,
+    srcBitrateKbps: video.bitrateKbps,
+    tier: preset,
+    overrides: input.options?.overrides ?? null,
+  });
+
   if (videoAction === 'copy') {
     args.push('-c:v', 'copy');
   } else {
-    args.push('-c:v', spec.defaultVideo);
-    // 只有 x264/x265 这类软编才认 preset，老编码器传了会直接报错
-    if (spec.defaultVideo === 'libx264' || spec.defaultVideo === 'libx265') {
-      args.push('-preset', 'veryfast');
+    args.push('-c:v', quality.encoder);
+    if (quality.speedPreset) args.push('-preset', quality.speedPreset);
+    if (quality.crf !== null) {
+      args.push('-crf', String(quality.crf));
+      // VP9 必须显式给 -b:v 0，否则 -crf 会被当成目标码率的上界
+      if (quality.encoder === 'libvpx-vp9') args.push('-b:v', '0');
+    } else if (quality.bitrateKbps !== null) {
+      args.push('-b:v', `${quality.bitrateKbps}k`);
     }
-    args.push(...buildVideoQualityArgs(spec.defaultVideo, video.bitrateKbps, preset));
     // 强制 8bit 4:2:0，兼容性最高（10bit 源在这里会被降到 8bit，下面会给警告）
     args.push('-pix_fmt', 'yuv420p');
   }
@@ -103,7 +118,7 @@ export function planConversion(input: PlanInput): PlanResult {
   if (audioAction === 'copy') {
     args.push('-c:a', 'copy');
   } else if (audioAction === 'encode') {
-    args.push('-c:a', spec.defaultAudio, '-b:a', audioBitrateFor(spec.defaultAudio, preset));
+    args.push('-c:a', spec.defaultAudio, '-b:a', quality.audioBitrate);
   }
 
   if (spec.faststart) {
@@ -134,7 +149,7 @@ export function planConversion(input: PlanInput): PlanResult {
   if (
     videoAction === 'encode' &&
     video.bitDepth > 8 &&
-    (spec.defaultVideo === 'libx264' || spec.defaultVideo === 'libx265')
+    (quality.encoder === 'libx264' || quality.encoder === 'libx265')
   ) {
     warnings.push({
       code: 'BIT_DEPTH_REDUCED',
@@ -176,5 +191,5 @@ export function planConversion(input: PlanInput): PlanResult {
           qualityNote: mode === 'remux' ? '画面 100% 保留，仅音频转码' : transcodeNote[preset],
         };
 
-  return { mode, videoAction, audioAction, args, warnings, estimate, preset };
+  return { mode, videoAction, audioAction, args, warnings, estimate, preset, quality };
 }

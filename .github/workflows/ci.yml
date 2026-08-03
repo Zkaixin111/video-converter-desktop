@@ -1,0 +1,118 @@
+name: CI
+
+# 这条流水线存在的理由：仓库里有 245 例测试与 32 组合回归，
+# 但它们只在本地终端里有意义 —— 提交历史里看不出「这次改动坏了没有」。
+#
+# 两个 job 故意分开：
+#   check      —— 毫秒级、必跑，任何一条红了就不要往下合并
+#   integration —— 真起 ffmpeg 转真文件，慢且依赖环境，单独一条便于定位失败原因
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 类型 · 规范 · 单测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 类型检查
+        run: pnpm typecheck
+
+      # 0 warning 策略：任何一条告警都让这条流水线变红，
+      # 否则 lint 会像车里那盏一直亮着的故障灯，最后没人看。
+      - name: ESLint
+        run: pnpm lint
+
+      - name: 单元测试
+        run: pnpm test
+
+  integration:
+    name: 集成 · 真转码
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: 安装依赖
+        run: pnpm install --frozen-lockfile
+
+      - name: 安装 FFmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version | head -1
+
+      # 应用按 resources/bin/<平台>-<架构>/ 找二进制，与 path.ts 的解析规则一致。
+      # 这一步不做，集成测试会「跳过」而不是「通过」——下一步会专门查这件事。
+      - name: 放进应用期望的位置
+        run: |
+          mkdir -p "resources/bin/$(node -p 'process.platform')-$(node -p 'process.arch')"
+          ln -sf "$(command -v ffmpeg)"  "resources/bin/$(node -p 'process.platform')-$(node -p 'process.arch')/ffmpeg"
+          ln -sf "$(command -v ffprobe)" "resources/bin/$(node -p 'process.platform')-$(node -p 'process.arch')/ffprobe"
+
+      - name: 生成测试素材
+        run: pnpm fixtures
+
+      - name: 集成测试
+        id: int
+        run: pnpm test:int 2>&1 | tee integration.log
+        continue-on-error: true
+
+      # 集成测试在缺 ffmpeg / 缺 fixture 时会 skip —— 那不是通过。
+      # 这里把「跳过」当成失败，CI 才不会假装绿灯。
+      - name: 拒绝「没测就算过」
+        if: always()
+        run: |
+          if grep -q "集成测试被跳过" integration.log; then
+            echo "::error::集成测试被跳过：环境没准备好，这不是通过"
+            exit 1
+          fi
+          if ! grep -q "Test Files" integration.log; then
+            echo "::error::集成测试没有产出结果，请查看日志"
+            exit 1
+          fi
+
+      - name: 汇总结果
+        if: always()
+        run: |
+          if [ "${{ steps.int.outcome }}" != "success" ]; then
+            echo "::error::集成测试失败"
+            exit 1
+          fi
+          echo "集成测试通过"
+
+      - name: 上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-log
+          path: integration.log
+          retention-days: 7

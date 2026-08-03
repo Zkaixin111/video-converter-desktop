@@ -12,7 +12,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
-const BIN = path.join(ROOT, 'resources', 'bin', `${process.platform}-${process.arch}`, 'ffmpeg.exe');
+// 与 src/main/core/ffmpeg/paths.ts 的命名规则保持一致：Windows 才带 .exe。
+// CI 在 Linux 上跑时，如果这里写死 .exe，脚本会直接退出 1。
+const EXE = process.platform === 'win32' ? '.exe' : '';
+const BIN = path.join(ROOT, 'resources', 'bin', `${process.platform}-${process.arch}`, `ffmpeg${EXE}`);
 const OUT = path.join(ROOT, 'tests', 'fixtures');
 
 if (!fs.existsSync(BIN)) {

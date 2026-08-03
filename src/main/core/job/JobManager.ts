@@ -21,15 +21,18 @@ import type {
   ContainerKey,
   FailurePolicy,
   JobSnapshot,
+  ConflictPolicy,
   MediaMeta,
   PlanResult,
   PresetTier,
   ProgressPayload,
   QueueItem,
+  QualityOverrides,
   QueueMode,
   QueueSnapshot,
   TaskParams,
 } from '../../../shared/types';
+import { DEFAULT_TEMPLATE } from '../../../shared/outputName';
 import { planConversion } from '../ffmpeg/planner';
 import { resolveOutputPath } from '../fs/outputPath';
 import { ConversionJob } from './ConversionJob';
@@ -56,6 +59,13 @@ export interface JobManagerDeps {
   getPolicy?: () => FailurePolicy;
   /** 队列模式：仅用于快照展示，不参与调度 */
   getMode?: () => QueueMode;
+  /**
+   * 精细调节参数：按目标格式取。
+   * 与策略/模式一样走运行期注入 —— JobManager 不认识「设置」这个概念。
+   */
+  getOverrides?: (target: ContainerKey) => QualityOverrides | null;
+  /** 输出命名模板与重名策略（TODO-02） */
+  getNaming?: () => { template: string; conflict: ConflictPolicy };
   exists?: (p: string) => boolean;
 }
 
@@ -113,6 +123,23 @@ export class JobManager {
     this.sink = sink;
   }
 
+  private overrides(target: ContainerKey): QualityOverrides | null {
+    try {
+      return this.deps.getOverrides?.(target) ?? null;
+    } catch {
+      // 手动画质参数是「锦上添花」，读不到就按档位走，绝不能因此让入队失败
+      return null;
+    }
+  }
+
+  private naming(): { template: string; conflict: ConflictPolicy } {
+    try {
+      return this.deps.getNaming?.() ?? { template: DEFAULT_TEMPLATE, conflict: 'rename' };
+    } catch {
+      return { template: DEFAULT_TEMPLATE, conflict: 'rename' };
+    }
+  }
+
   private policy(): FailurePolicy {
     return this.deps.getPolicy?.() ?? 'continue';
   }
@@ -133,17 +160,31 @@ export class JobManager {
   enqueue(inputs: EnqueueInput[]): EnqueuedJob[] {
     if (inputs.length === 0) return [];
 
+    const naming = this.naming();
     const out: EnqueuedJob[] = [];
-    for (const input of inputs) {
+    for (const [idx, input] of inputs.entries()) {
       const plan = planConversion({
         meta: input.meta,
         target: input.target,
-        options: { preset: input.preset },
+        options: { preset: input.preset, overrides: this.overrides(input.target) },
       });
-      const outputPath = resolveOutputPath(input.meta.path, input.target, {
-        outputDir: input.outputDir ?? null,
-        exists: (p) => this.exists(p),
-      });
+
+      let outputPath: string;
+      try {
+        outputPath = resolveOutputPath(input.meta.path, input.target, {
+          outputDir: input.outputDir ?? null,
+          exists: (p) => this.exists(p),
+          template: naming.template,
+          conflict: naming.conflict,
+          index: inputs.length > 1 ? idx : null,
+          total: inputs.length,
+          preset: input.preset,
+        });
+      } catch (err) {
+        // 「同名就跳过」策略：这个文件不生成任务，其余照常入队
+        if (err instanceof AppError && err.code === 'E_OUTPUT_SKIPPED') continue;
+        throw err;
+      }
       this.reserved.add(norm(outputPath));
 
       const entry: Entry = {
@@ -210,11 +251,16 @@ export class JobManager {
     const plan = planConversion({
       meta: entry.meta,
       target: next.target,
-      options: { preset: next.preset },
+      options: { preset: next.preset, overrides: this.overrides(next.target) },
     });
+    const naming = this.naming();
     const outputPath = resolveOutputPath(entry.meta.path, next.target, {
       outputDir: entry.outputDir,
       exists: (p) => this.exists(p),
+      template: naming.template,
+      // 改参数时用户就是想让它跑起来，重名一律按加序号处理
+      conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
+      preset: next.preset,
     });
     this.reserved.add(norm(outputPath));
 
@@ -277,11 +323,16 @@ export class JobManager {
     const plan = planConversion({
       meta: entry.meta,
       target: entry.target,
-      options: { preset: entry.preset },
+      options: { preset: entry.preset, overrides: this.overrides(entry.target) },
     });
+    const naming = this.naming();
     const outputPath = resolveOutputPath(entry.meta.path, entry.target, {
       outputDir: entry.outputDir,
       exists: (p) => this.exists(p),
+      template: naming.template,
+      // 重试同理：重试意味着「就是要转」，跳过策略在这里不成立
+      conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
+      preset: entry.preset,
     });
     this.reserved.add(norm(outputPath));
 

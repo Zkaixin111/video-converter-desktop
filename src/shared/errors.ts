@@ -26,6 +26,7 @@ export type ErrorCode =
   | 'E_SPAWN_FAILED'
   | 'E_SAME_PATH'
   | 'E_OUTPUT_INVALID'
+  | 'E_OUTPUT_SKIPPED'
   | 'E_BINARY_MISSING'
   | 'E_BAD_REQUEST'
   | 'E_UNKNOWN';
@@ -61,6 +62,7 @@ export const ERROR_TEXT: Record<ErrorCode, string> = {
   E_SPAWN_FAILED: '无法启动转换引擎，请检查安装是否完整。',
   E_SAME_PATH: '输出路径与源文件相同，请换一个目录。',
   E_OUTPUT_INVALID: '转换完成但输出文件校验未通过，已删除损坏的文件。',
+  E_OUTPUT_SKIPPED: '同名输出文件已存在，按设置跳过了这个文件。',
   E_BINARY_MISSING: '缺少转换组件（FFmpeg），无法开始转换。',
   E_BAD_REQUEST: '请求参数不合法。',
   E_UNKNOWN: '出现了未知错误。',
