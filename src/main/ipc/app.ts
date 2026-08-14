@@ -1,10 +1,23 @@
-/** app:* / window:* —— 能力自检、设置、剪贴板、窗口控制 */
-import { BrowserWindow, clipboard, ipcMain, nativeTheme } from 'electron';
+/** app:* / window:* —— 能力自检、设置、剪贴板、窗口控制、日志与诊断包 */
+import fs from 'node:fs';
+import {
+  app,
+  BrowserWindow,
+  clipboard,
+  dialog,
+  ipcMain,
+  nativeTheme,
+  shell,
+} from 'electron';
 import { CH, type WindowAction } from '../../shared/channels';
 import { AppError } from '../../shared/errors';
 import type { Capabilities, Settings } from '../../shared/types';
 import { windowBackgroundOf } from '../../shared/theme';
 import { toCapabilities, verifyBinaries } from '../core/ffmpeg/paths';
+import { buildDiagnosticEntries, diagnosticFileName } from '../core/fs/diagnostics';
+import { createZip } from '../core/fs/zip';
+import { historyStore } from '../history';
+import { logger } from '../logger';
 import { getSettings, updateSettings } from '../store';
 import { requireObject, requireString, wrap } from './wrap';
 
@@ -38,6 +51,75 @@ export function registerAppIpc(getWindow: () => BrowserWindow | null): void {
       const { text } = requireObject(payload, 'payload');
       clipboard.writeText(requireString(text, 'text'));
       return { ok: true };
+    }),
+  );
+
+  /**
+   * 打开日志所在目录（TODO-11）。
+   *
+   * 「设置里能看到日志」的价值不在于让用户天天去看，
+   * 而在于他报问题时能一键拿到现场，而不是对着 toast 截图。
+   */
+  ipcMain.handle(CH.openLogs, () =>
+    wrap<{ ok: boolean }>(() => {
+      const file = logger.getLogFilePath();
+      if (!file || !fs.existsSync(file)) {
+        throw new AppError('E_FILE_NOT_FOUND', '还没有产生任何日志。', {
+          hint: '进行一次转换之后这里就会有记录。',
+        });
+      }
+      shell.showItemInFolder(file);
+      return { ok: true };
+    }),
+  );
+
+  /** 某个任务的日志片段：报问题时只需要「这一次」的，不是整份日志 */
+  ipcMain.handle(CH.jobLog, (_e, payload: unknown) =>
+    wrap<{ lines: string[] }>(() => {
+      const { jobId } = requireObject(payload, 'payload');
+      return { lines: logger.linesFor(requireString(jobId, 'jobId')).slice(-50) };
+    }),
+  );
+
+  /**
+   * 导出诊断包（TODO-11）。
+   *
+   * 让用户自己选保存位置：诊断包是要发给别人的，
+   * 默认塞进 userData 还得他再去找一遍。
+   */
+  ipcMain.handle(CH.exportDiagnostics, () =>
+    wrap<{ path: string | null }>(async () => {
+      const now = Date.now();
+      // 自检可能失败（引擎缺失），但诊断包恰恰要记录「引擎缺失」这件事
+      const caps = await verifyBinaries(false).then(toCapabilities).catch(() => null);
+
+      const entries = buildDiagnosticEntries({
+        settings: getSettings(),
+        capabilities: caps ?? null,
+        history: historyStore().list().slice(0, 50),
+        logs: logger.snapshot(),
+        appVersion: app.getVersion(),
+        now,
+      });
+
+      const defaultPath = diagnosticFileName(now);
+      const win = getWindow();
+      const res = win
+        ? await dialog.showSaveDialog(win, {
+            title: '导出诊断包',
+            defaultPath,
+            filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
+          })
+        : await dialog.showSaveDialog({
+            title: '导出诊断包',
+            defaultPath,
+            filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
+          });
+      if (res.canceled || !res.filePath) return { path: null };
+
+      fs.writeFileSync(res.filePath, createZip(entries));
+      logger.info('diagnostics exported', res.filePath);
+      return { path: res.filePath };
     }),
   );
 

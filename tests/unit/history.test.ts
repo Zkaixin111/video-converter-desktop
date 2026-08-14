@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HistoryStore } from '../../src/main/core/job/history';
+import { HistoryStore, normalizeEntry } from '../../src/main/core/job/history';
 import type { HistoryEntry } from '../../src/shared/types';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -23,13 +23,23 @@ function entry(over: Partial<HistoryEntry> = {}): HistoryEntry {
     outputPath: 'C:/out/a_converted.webm',
     target: 'webm',
     mode: 'transcode',
+    preset: 'standard',
     sourceSizeBytes: 1000,
     outputSizeBytes: 800,
     elapsedMs: 1200,
     verified: true,
     finishedAt: 1_700_000_000_000,
+    status: 'done',
     ...over,
   };
+}
+
+/** 旧版本的记录：那时只记成功，没有 status / preset */
+function legacyEntry(): HistoryEntry {
+  const e = entry() as unknown as Record<string, unknown>;
+  delete e.status;
+  delete e.preset;
+  return e as unknown as HistoryEntry;
 }
 
 beforeEach(() => {
@@ -135,5 +145,48 @@ describe('HistoryStore 容错', () => {
     const nested = path.join(DIR, 'deep', 'nested', 'history.json');
     new HistoryStore(nested).add(entry());
     expect(fs.existsSync(nested)).toBe(true);
+  });
+});
+
+/**
+ * 旧版 history.json 兼容（TODO-07）。
+ *
+ * 老版本只在成功时写历史，记录里没有 status / preset 两个字段。
+ * 升级后必须还能照常展示与重跑 —— 让用户「清空历史才能用新版本」是不可接受的。
+ */
+describe('HistoryStore 旧数据迁移', () => {
+  it('缺 status 的记录按成功处理', () => {
+    fs.writeFileSync(FILE, JSON.stringify({ version: 1, entries: [legacyEntry()] }), 'utf8');
+    const [got] = new HistoryStore(FILE).list();
+    expect(got.status).toBe('done');
+  });
+
+  it('缺 preset 的记录按 standard 处理', () => {
+    fs.writeFileSync(FILE, JSON.stringify({ version: 1, entries: [legacyEntry()] }), 'utf8');
+    const [got] = new HistoryStore(FILE).list();
+    expect(got.preset).toBe('standard');
+  });
+
+  it('unknown 之类的脏 status 也按成功处理（不猜失败）', () => {
+    const dirty = { ...entry(), status: 'weird' } as unknown as HistoryEntry;
+    expect(normalizeEntry(dirty).status).toBe('done');
+  });
+
+  it('失败与取消状态原样读回，不被迁移抹平', () => {
+    const store = new HistoryStore(FILE);
+    store.add(entry({ id: 'f1', status: 'failed', error: { code: 'E_FFMPEG_FAILED', message: '转换失败。' } }));
+    store.add(entry({ id: 'c1', status: 'cancelled' }));
+    const byId = Object.fromEntries(store.list().map((e) => [e.id, e]));
+    expect(byId.f1?.status).toBe('failed');
+    expect(byId.f1?.error?.code).toBe('E_FFMPEG_FAILED');
+    expect(byId.c1?.status).toBe('cancelled');
+  });
+
+  it('get 能按 id 取回一条（一键重跑靠它）', () => {
+    const store = new HistoryStore(FILE);
+    store.add(entry({ id: 'x', finishedAt: 1 }));
+    store.add(entry({ id: 'y', finishedAt: 2 }));
+    expect(store.get('y')?.id).toBe('y');
+    expect(store.get('nope')).toBeNull();
   });
 });

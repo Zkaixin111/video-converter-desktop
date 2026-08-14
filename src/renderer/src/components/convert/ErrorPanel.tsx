@@ -14,11 +14,20 @@ import { Icon } from '../ui/Icon';
 
 interface ErrorPanelProps {
   error: JobError;
+  /** 当前任务的 jobId；null 时就不提供「查看本次日志」入口 */
+  jobId: string | null;
+  onViewLog: () => void;
   onCopyDiagnostics: () => void;
   onTryAnother: () => void;
 }
 
-export function ErrorPanel({ error, onCopyDiagnostics, onTryAnother }: ErrorPanelProps): ReactElement {
+export function ErrorPanel({
+  error,
+  jobId,
+  onViewLog,
+  onCopyDiagnostics,
+  onTryAnother,
+}: ErrorPanelProps): ReactElement {
   return (
     <div className="card error-card">
       <div className="error-title">
@@ -27,6 +36,12 @@ export function ErrorPanel({ error, onCopyDiagnostics, onTryAnother }: ErrorPane
       </div>
       <p>{error.message}</p>
       <div className="error-actions">
+        {jobId ? (
+          // 「复制诊断信息」复制的是什么，用户一直不知道；这里让他能直接看到
+          <Button variant="secondary" onClick={onViewLog}>
+            查看本次日志
+          </Button>
+        ) : null}
         <Button variant="secondary" onClick={onCopyDiagnostics}>
           <Icon name="i-copy" />
           复制诊断信息

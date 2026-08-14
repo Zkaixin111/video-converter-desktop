@@ -36,6 +36,11 @@ export interface ConversionJobOptions {
    * 界面表现为进度条永远不动、终态被当成别人的任务忽略。
    */
   jobId?: string;
+  /**
+   * 并发时给这个任务限线程（TODO-10）。
+   * null / undefined = 不加 `-threads`，args 与串行时逐字节一致。
+   */
+  threads?: number | null;
   onProgress?: (payload: ProgressPayload) => void;
   onState?: (snapshot: JobSnapshot) => void;
 }
@@ -46,6 +51,7 @@ export class ConversionJob {
   private readonly plan: PlanResult;
   private readonly outputPath: string;
   private readonly target?: ContainerKey;
+  private readonly threads?: number | null;
   private readonly onProgress?: (payload: ProgressPayload) => void;
   private readonly onState?: (snapshot: JobSnapshot) => void;
 
@@ -63,6 +69,7 @@ export class ConversionJob {
     this.plan = options.plan;
     this.outputPath = options.outputPath;
     this.target = options.target;
+    this.threads = options.threads;
     this.onProgress = options.onProgress;
     this.onState = options.onState;
   }
@@ -82,6 +89,9 @@ export class ConversionJob {
       fileName: this.meta.fileName,
       sourcePath: this.meta.path,
       target: this.target,
+      // 档位来自规划结果：失败/取消没有 result，历史也只能从这里拿
+      preset: this.plan.preset,
+      sourceSizeBytes: this.meta.sizeBytes,
       progress: this.progress,
       result: this.result,
       error: this.error,
@@ -108,7 +118,10 @@ export class ConversionJob {
       this.handle = runConversion({
         inputPath: this.meta.path,
         outputPartPath: partPath,
-        args: this.plan.args,
+        // 并发时限制线程：4 个 ffmpeg 各占满全部核心，总时间反而比串行还长
+        args: this.threads
+          ? [...this.plan.args, '-threads', String(this.threads)]
+          : this.plan.args,
         totalDurationSec: this.meta.durationSec,
         onProgress: (sample) => {
           if (this.status === 'preparing') {

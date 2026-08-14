@@ -13,7 +13,8 @@ import { CONTAINERS } from '../../../shared/containers';
 import type {
   Capabilities,
   ContainerKey,
-  HistoryEntry,
+  HistoryItem,
+  HistoryStatus,
   JobError,
   JobResult,
   JobSnapshot,
@@ -89,8 +90,8 @@ interface AppState {
   settings: Settings | null;
   caps: Capabilities | null;
   toasts: ToastItem[];
-  /** 转换历史（主进程持久化，最新在前） */
-  history: HistoryEntry[];
+  /** 转换历史（主进程持久化，最新在前）；成功/失败/取消都在里面（TODO-07） */
+  history: HistoryItem[];
   /** 队列快照（主进程推送，含排队中的任务与暂停状态） */
   queue: QueueSnapshot | null;
 
@@ -118,6 +119,11 @@ interface AppState {
   loadHistory: () => Promise<void>;
   removeHistory: (id: string) => Promise<void>;
   clearHistory: () => Promise<void>;
+  /** 一键重跑：按记录里的原参数重新入队（TODO-07） */
+  rerunHistory: (id: string) => Promise<void>;
+  /** 历史列表的筛选（TODO-07） */
+  historyFilter: HistoryStatus | 'all';
+  setHistoryFilter: (filter: HistoryStatus | 'all') => void;
   /* 队列 */
   refreshQueue: () => Promise<void>;
   /** 返回是否成功：编辑器据此决定要不要关闭面板 */
@@ -127,6 +133,10 @@ interface AppState {
   retryQueueItem: (jobId: string) => Promise<void>;
   resumeQueue: () => Promise<void>;
   copyDiagnostics: () => Promise<void>;
+  /** 打开日志所在目录（TODO-11） */
+  openLogs: () => Promise<void>;
+  /** 导出诊断包并在资源管理器里定位（TODO-11） */
+  exportDiagnostics: () => Promise<void>;
   toast: (message: string, type?: ToastType) => void;
   dismissToast: (id: number) => void;
 }
@@ -251,6 +261,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   caps: null,
   toasts: [],
   history: [],
+  historyFilter: 'all',
   queue: null,
 
   /** 启动一次性初始化：读自检结果与设置、订阅主进程事件 */
@@ -778,12 +789,32 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearHistory: async () => {
     try {
       await call(window.api.clearHistory());
-      set({ history: [] });
+      set({ history: [], historyFilter: 'all' });
       get().toast('已清空转换历史', 'success');
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }
   },
+
+  /**
+   * 一键重跑（TODO-07）。
+   *
+   * 重跑一定会生成一个新 jobId —— 历史是按 jobId 幂等的，
+   * 沿用旧的 id 会让「上次失败」那条记录被新结果直接覆盖掉，
+   * 用户就再也查不到它失败过。
+   */
+  rerunHistory: async (id) => {
+    try {
+      await call(window.api.rerunHistory(id));
+      void get().refreshQueue();
+      set({ page: 'queue' });
+      get().toast('已按原参数重新加入队列', 'success');
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  setHistoryFilter: (filter) => set({ historyFilter: filter }),
 
   /* ── 队列 ─────────────────────────────── */
   refreshQueue: async () => {
@@ -865,6 +896,34 @@ export const useAppStore = create<AppState>((set, get) => ({
       get().toast('诊断信息已复制', 'success');
     } catch (err) {
       get().toast(messageOf(err), 'error');
+    }
+  },
+
+  /** 打开日志目录：用户报问题时能一键拿到现场，不用对着 toast 截图 */
+  openLogs: async () => {
+    try {
+      await call(window.api.openLogs());
+    } catch (err) {
+      get().toast(messageOf(err), 'info');
+    }
+  },
+
+  /**
+   * 导出诊断包（TODO-11）。
+   * 导出后直接在资源管理器里选中它 —— 用户下一步就是转发给别人，
+   * 让他自己去找下载到哪儿了是没必要的折磨。
+   */
+  exportDiagnostics: async () => {
+    try {
+      const { path } = await call(window.api.exportDiagnostics());
+      if (!path) return;
+      await call(window.api.openFolder(path));
+      get().toast('诊断包已导出', 'success');
+    } catch (err) {
+      const msg = messageOf(err);
+      // 用户在保存对话框里点了取消，这不算错误，别弹红色
+      if (msg.includes('取消')) return;
+      get().toast(msg, 'error');
     }
   },
 

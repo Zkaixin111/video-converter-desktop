@@ -150,6 +150,13 @@ export interface JobError {
   detail?: string;
 }
 
+/**
+ * 一个任务的完整快照。
+ *
+ * `preset` / `sourceSizeBytes` 是为了让**终态事件自带落历史所需的全部信息**：
+ * 失败与取消没有 `result`，如果还要回头去队列里翻条目，就会出现
+ * 「条目已经被移出去了，历史里只剩文件名」的空记录。
+ */
 export interface JobSnapshot {
   status: JobStatus;
   jobId?: string;
@@ -157,6 +164,9 @@ export interface JobSnapshot {
   /** 源文件路径：历史记录需要，失败诊断也要 */
   sourcePath?: string;
   target?: ContainerKey;
+  preset?: PresetTier;
+  /** 失败/取消时也要能记下源文件多大 */
+  sourceSizeBytes?: number;
   progress?: ProgressPayload;
   result?: JobResult;
   error?: JobError;
@@ -205,6 +215,13 @@ export interface QueueItem {
 export interface QueueSnapshot {
   items: QueueItem[];
   activeId: string | null;
+  /** 并发时同时在跑的全部任务（TODO-10）；`activeId` 取其中最早那条 */
+  activeIds: string[];
+  /**
+   * 这一批的整体进度（TODO-10）。
+   * 并发时「还剩几个没跑」比「某一个跑到 42%」有用得多。
+   */
+  batch: { total: number; settled: number } | null;
   paused: boolean;
   /** 暂停原因：目前只有「失败即暂停」一种 */
   pausedReason: 'failure' | null;
@@ -225,11 +242,16 @@ export interface EnqueueItemInput {
   custom: TaskParams | null;
 }
 
+/** 历史条目的结局（TODO-07）：旧数据没有这个字段，一律视为 `done` */
+export type HistoryStatus = 'done' | 'failed' | 'cancelled';
+
 /**
- * 一条转换历史（只在成功时写入）。
+ * 一条转换历史（成功 / 失败 / 取消都记）。
  *
  * 有意冗余存 `fileName` / `target` / 体积：历史要能独立展示，
  * 不能依赖源文件还在不在——用户很可能转完就删了原片。
+ *
+ * `preset` 是为了「一键重跑」：重跑必须按原参数，用户此刻的全局档位不该覆盖它。
  */
 export interface HistoryEntry {
   /** 复用 jobId：天然唯一，重复写入可幂等去重 */
@@ -239,12 +261,27 @@ export interface HistoryEntry {
   outputPath: string;
   target: ContainerKey;
   mode: ConversionMode;
+  preset: PresetTier;
   sourceSizeBytes: number;
   outputSizeBytes: number;
   elapsedMs: number;
   verified: boolean;
   /** epoch ms，列表按它倒序 */
   finishedAt: number;
+  status: HistoryStatus;
+  /** 失败/取消时的原因（成功时为 undefined） */
+  error?: { code: string; message: string };
+}
+
+/**
+ * 列表读出来的历史条目（TODO-07）。
+ *
+ * 多出来的 `sourceExists` 是**现场判定**，不落盘：
+ * 「重跑」按钮要先知道源文件还在不在，而每次记一条历史时都存一个布尔值毫无意义
+ * ——文件会在记录写完之后才被删掉。
+ */
+export interface HistoryItem extends HistoryEntry {
+  sourceExists: boolean;
 }
 
 /** IPC 统一返回包装：不抛异常，避免 Electron 把错误序列化成难解析的字符串 */
@@ -303,6 +340,14 @@ export interface Settings {
   queueMode: QueueMode;
   /** 任务失败后的队列行为 */
   failurePolicy: FailurePolicy;
+  /** 全部任务结束后发一条系统通知（TODO-08） */
+  notifyOnFinish: boolean;
+  /** 同时运行的转码任务数 1–4（TODO-10） */
+  concurrency: number;
+  /** 关窗时最小化到托盘继续转码（TODO-14）；关闭则关窗即退出 */
+  closeToTray: boolean;
+  /** 上次被强杀时，重启后恢复未完成的队列（TODO-12） */
+  restoreQueue: boolean;
 }
 
 /** 「复制诊断信息」的内容载体，由主进程拼装 */
@@ -317,6 +362,18 @@ export interface Diagnostics {
  * - `skip`      跳过该文件（批量时这个文件的任务不生成）
  */
 export type ConflictPolicy = 'rename' | 'overwrite' | 'skip';
+
+/**
+ * 一批任务的最终账（TODO-08）。
+ *
+ * 按「结局」分三桶而不是只给一个成功数：用户真正要区分的是
+ * 「全成了」还是「有失败的」，后者需要他回来处理。
+ */
+export interface BatchSummary {
+  done: number;
+  failed: number;
+  cancelled: number;
+}
 
 /** 磁盘空间预检结果 */
 export interface DiskEstimate {

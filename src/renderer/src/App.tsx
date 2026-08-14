@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { cn } from './lib/cn';
 import { useFileDrop } from './hooks/useFileDrop';
+import { useHotkeys } from './hooks/useHotkeys';
 import { useTheme } from './hooks/useTheme';
 import { useAppStore, type Page } from './store/useAppStore';
 import { TitleBar } from './components/layout/TitleBar';
@@ -38,6 +39,8 @@ export default function App(): ReactElement {
   const dragging = useFileDrop();
   // 主题只改 <html data-theme> 一个属性（深色 Token 全挂在它下面）
   useTheme();
+  // 全局快捷键（TODO-09）：Esc 也从这里走，输入框聚焦时不再误伤
+  useHotkeys();
   const [switching, setSwitching] = useState(false);
   const contentRef = useRef<HTMLDivElement>(null);
   const switchTimer = useRef<number | null>(null);
@@ -46,17 +49,6 @@ export default function App(): ReactElement {
   useEffect(() => {
     void init();
   }, [init]);
-
-  // Esc 取消转换（与原型一致）
-  useEffect(() => {
-    const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key !== 'Escape') return;
-      const s = useAppStore.getState();
-      if (s.stage === 'running') void s.cancel();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, []);
 
   useEffect(
     () => () => {

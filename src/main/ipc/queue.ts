@@ -23,10 +23,13 @@ import type {
   QueueSnapshot,
   TaskParams,
 } from '../../shared/types';
+import { toHistoryEntry } from '../../shared/history';
+import { batchNotifyText } from '../../shared/notify';
 import { checkSpace } from '../core/fs/disk';
 import { jobManager } from '../core/job/JobManager';
 import { historyStore } from '../history';
 import { logger } from '../logger';
+import { notifyFinished } from '../notify';
 import { getSettings } from '../store';
 import { requireAbsPath, requireArray, requireObject, requireString, wrap } from './wrap';
 
@@ -100,10 +103,21 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
       return q && q.enabled ? q : null;
     },
     getNaming: () => getSettings().naming,
+    // 并发数（TODO-10）：设置改了之后新起的任务立刻按新值跑
+    getConcurrency: () => getSettings().concurrency,
   });
 
   jobManager.attach({
     onQueue: (snapshot: QueueSnapshot) => send(EV.queue, snapshot),
+
+    // 整批结束才通知（TODO-08）：10 个文件弹 10 条是骚扰，一条汇总才是信息
+    onBatchFinished: (summary) => {
+      const text = batchNotifyText(summary);
+      if (!text) return;
+      if (!getSettings().notifyOnFinish) return;
+      notifyFinished(getWindow, text);
+    },
+
     onProgress: (payload) => send(EV.progress, payload),
     onState: (snapshot: JobSnapshot) => {
       send(EV.state, snapshot);
@@ -121,22 +135,12 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
         );
       }
 
-      // 只有成功才进历史：失败/取消会在列表里变成噪音
-      if (snapshot.status === 'done' && snapshot.result) {
+      // 历史是「任务台账」而不是「成功清单」（TODO-07）：
+      // 失败恰恰是最需要回看的——它能重跑，且记录了用的什么参数。
+      const record = toHistoryEntry(snapshot, Date.now());
+      if (record) {
         try {
-          historyStore().add({
-            id: snapshot.result.jobId,
-            fileName: snapshot.fileName ?? '',
-            sourcePath: snapshot.sourcePath ?? '',
-            outputPath: snapshot.result.outputPath,
-            target: snapshot.target ?? 'mp4',
-            mode: snapshot.result.mode,
-            sourceSizeBytes: snapshot.result.sourceSizeBytes,
-            outputSizeBytes: snapshot.result.outputSizeBytes,
-            elapsedMs: snapshot.result.elapsedMs,
-            verified: snapshot.result.verified,
-            finishedAt: Date.now(),
-          });
+          historyStore().add(record);
         } catch (err) {
           logger.warn('history append failed', String(err));
         }

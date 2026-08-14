@@ -12,7 +12,8 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
-import type { HistoryEntry } from '../../../shared/types';
+import { isPresetTier } from '../../../shared/containers';
+import type { HistoryEntry, HistoryStatus } from '../../../shared/types';
 
 /** 超出就淘汰最旧的。100 条足够回看，再多会让队列页变成负担 */
 export const HISTORY_LIMIT = 100;
@@ -23,6 +24,23 @@ interface HistoryFile {
 }
 
 const EMPTY: HistoryFile = { version: 1, entries: [] };
+
+/**
+ * 兼容旧版 `history.json`（TODO-07）。
+ *
+ * 旧版本只在成功时写历史，所以记录里没有 `status`、也没有 `preset`。
+ * 这里一律按「成功 + standard 档位」补齐 —— 这正是老版本的真实行为，
+ * 补齐后老数据既能展示也能重跑，不需要用户清空历史。
+ */
+export function normalizeEntry(e: HistoryEntry): HistoryEntry {
+  const status: HistoryStatus =
+    e.status === 'failed' || e.status === 'cancelled' ? e.status : 'done';
+  return {
+    ...e,
+    status,
+    preset: isPresetTier(e.preset) ? e.preset : 'standard',
+  };
+}
 
 export class HistoryStore {
   private readonly file: string;
@@ -41,6 +59,11 @@ export class HistoryStore {
   list(): HistoryEntry[] {
     const data = this.read();
     return [...data.entries].sort((a, b) => b.finishedAt - a.finishedAt);
+  }
+
+  /** 按 id 取一条；没有就返回 null（「一键重跑」据此判定这条还在不在） */
+  get(id: string): HistoryEntry | null {
+    return this.read().entries.find((e) => e.id === id) ?? null;
   }
 
   /** 幂等追加：同 id 覆盖旧记录（重试成功后会带新时间） */
@@ -74,7 +97,7 @@ export class HistoryStore {
         (e): e is HistoryEntry =>
           !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.outputPath === 'string',
       );
-      return { version: 1, entries };
+      return { version: 1, entries: entries.map(normalizeEntry) };
     } catch {
       return { ...EMPTY, entries: [] };
     }

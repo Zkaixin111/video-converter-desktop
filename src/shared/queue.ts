@@ -12,6 +12,22 @@ import type {
   TaskParams,
 } from './types';
 
+/** 并发上限（TODO-10）：再高就不是「同时转 4 个」而是「每个都变慢 4 倍」 */
+export const CONCURRENCY_MIN = 1;
+export const CONCURRENCY_MAX = 4;
+
+/**
+ * 并发数钳到 1–4。
+ *
+ * 钳住而不是报错：并发数是**偏好**（机器有 16 核就敢填 16），
+ * 但超过 4 会让每个 ffmpeg 都在抢 CPU，总时间反而变长。
+ * 脏值（NaN / 小数 / 负数）一律回落到 1 —— 也就是老版本的串行行为。
+ */
+export function clampConcurrency(n: unknown): number {
+  const v = typeof n === 'number' && Number.isFinite(n) ? Math.round(n) : CONCURRENCY_MIN;
+  return Math.min(CONCURRENCY_MAX, Math.max(CONCURRENCY_MIN, v));
+}
+
 export interface ResolveInput {
   /** 任务自带参数；null 表示跟随全局 */
   custom: TaskParams | null;

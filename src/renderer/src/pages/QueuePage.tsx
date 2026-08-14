@@ -25,7 +25,8 @@ import { CONTAINERS, CONTAINER_ORDER } from '../../../shared/containers';
 import { canEditTask, canRemoveTask, canRetryTask } from '../../../shared/queue';
 import type {
   ContainerKey,
-  HistoryEntry,
+  HistoryItem,
+  HistoryStatus,
   PresetTier,
   QueueItem,
   QueueMode,
@@ -70,7 +71,7 @@ function EmptyHistory(): ReactElement {
         <Icon name="i-clock" />
       </div>
       <h3>还没有转换记录</h3>
-      <p>每次转换成功后，这里会留下输出位置，方便随时找回</p>
+      <p>每次转换结束（含失败与取消）都会记在这里，可以直接按原参数重跑</p>
       <Button variant="secondary" onClick={() => setPage('convert')}>
         返回转换页
       </Button>
@@ -78,36 +79,76 @@ function EmptyHistory(): ReactElement {
   );
 }
 
-function HistoryRow({ entry }: { entry: HistoryEntry }): ReactElement {
+/** 历史条目的结局标签（TODO-07）：失败/取消也要能一眼认出来 */
+const HISTORY_STATUS: Record<HistoryStatus, { label: string; chip: string }> = {
+  done: { label: '成功', chip: 'chip-ok' },
+  failed: { label: '失败', chip: 'chip-fail' },
+  cancelled: { label: '已取消', chip: 'chip-global' },
+};
+
+const HISTORY_FILTERS: { key: HistoryStatus | 'all'; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'done', label: '成功' },
+  { key: 'failed', label: '失败' },
+  { key: 'cancelled', label: '已取消' },
+];
+
+function HistoryRow({ entry }: { entry: HistoryItem }): ReactElement {
   const toast = useAppStore((s) => s.toast);
   const remove = useAppStore((s) => s.removeHistory);
+  const rerun = useAppStore((s) => s.rerunHistory);
+
+  const status = HISTORY_STATUS[entry.status];
+  const succeeded = entry.status === 'done';
 
   return (
-    <div className="queue-row is-history">
+    <div className={`queue-row is-history${entry.status === 'failed' ? ' is-failed' : ''}`}>
       <div className="q-ico">{CONTAINERS[entry.target].label}</div>
       <div className="q-body">
-        <div className="q-name" title={entry.outputPath}>
+        <div className="q-name" title={succeeded ? entry.outputPath : entry.sourcePath}>
           <span className="q-fname">{entry.fileName}</span> <span className="arrow">→</span>{' '}
-          {CONTAINERS[entry.target].label}
+          <span>{CONTAINERS[entry.target].label}</span>
+          <span className={`chip ${status.chip}`}>{status.label}</span>
         </div>
-        <div className="q-meta">
-          {fmtSize(entry.sourceSizeBytes)} → {fmtSize(entry.outputSizeBytes)} ·{' '}
-          {entry.verified ? '已验证' : '未校验'} · {fmtWhen(entry.finishedAt)}
-        </div>
+
+        {succeeded ? (
+          <div className="q-meta">
+            {fmtSize(entry.sourceSizeBytes)} → {fmtSize(entry.outputSizeBytes)} ·{' '}
+            {entry.verified ? '已验证' : '未校验'} · {fmtWhen(entry.finishedAt)}
+          </div>
+        ) : (
+          <div className="q-meta">
+            {fmtWhen(entry.finishedAt)}
+            {entry.error ? ` · ${entry.error.message}` : ''}
+          </div>
+        )}
       </div>
       <div className="q-right">
         <button type="button" className="btn-text" onClick={() => void remove(entry.id)}>
           移除
         </button>
-        <Button
-          variant="secondary"
-          onClick={() => {
-            void window.api.openFolder(entry.outputPath);
-            toast('已打开输出文件夹', 'success');
-          }}
-        >
-          打开
-        </Button>
+
+        {succeeded ? (
+          <Button
+            variant="secondary"
+            onClick={() => {
+              void window.api.openFolder(entry.outputPath);
+              toast('已打开输出文件夹', 'success');
+            }}
+          >
+            打开
+          </Button>
+        ) : (
+          // 源文件不在了就重跑不了：宁可给出原因，也不要让用户点了才发现
+          <Button
+            variant="primary"
+            disabled={!entry.sourceExists}
+            title={entry.sourceExists ? '按原参数重新转换' : '源文件已不在原位置，无法重跑'}
+            onClick={() => void rerun(entry.id)}
+          >
+            重跑
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -381,6 +422,9 @@ export function QueuePage(): ReactElement {
   const clearHistory = useAppStore((s) => s.clearHistory);
   const refreshQueue = useAppStore((s) => s.refreshQueue);
 
+  const historyFilter = useAppStore((s) => s.historyFilter);
+  const setHistoryFilter = useAppStore((s) => s.setHistoryFilter);
+
   const [editingId, setEditingId] = useState<string | null>(null);
 
   // 进页面拉一次最新快照：事件流可能有丢帧（窗口刚建好/刚从别的页面回来）
@@ -403,6 +447,11 @@ export function QueuePage(): ReactElement {
     item,
     rank: item.status === 'pending' ? ++waitingSeq : 0,
   }));
+
+  const visible = useMemo(
+    () => (historyFilter === 'all' ? history : history.filter((e) => e.status === historyFilter)),
+    [history, historyFilter],
+  );
 
   return (
     <section className="page" aria-label="任务队列">
@@ -454,11 +503,33 @@ export function QueuePage(): ReactElement {
         ) : null}
       </div>
 
+      {/* 失败与取消也进历史（TODO-07），所以要能按结局筛 —— 否则找一条失败记录要在成功记录里翻 */}
       {history.length > 0 ? (
+        <div className="history-filter">
+          <div className="segmented" role="group" aria-label="历史筛选">
+            {HISTORY_FILTERS.map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                aria-pressed={historyFilter === f.key}
+                onClick={() => setHistoryFilter(f.key)}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {visible.length > 0 ? (
         <div className="queue-list">
-          {history.map((entry) => (
+          {visible.map((entry) => (
             <HistoryRow key={entry.id} entry={entry} />
           ))}
+        </div>
+      ) : history.length > 0 ? (
+        <div className="empty-block is-inline">
+          <p>这个筛选下还没有记录</p>
         </div>
       ) : (
         <EmptyHistory />

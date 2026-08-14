@@ -14,7 +14,7 @@ import type {
   ContainerKey,
   DiskEstimate,
   EnqueueItemInput,
-  HistoryEntry,
+  HistoryItem,
   IpcResult,
   JobSnapshot,
   MediaMeta,
@@ -109,12 +109,16 @@ const api = {
   onQueue: (cb: (s: QueueSnapshot) => void) => subscribe<QueueSnapshot>(EV.queue, cb),
 
   /* ── 历史 ─────────────────────────────────────────────── */
-  listHistory: (): Promise<IpcResult<HistoryEntry[]>> => ipcRenderer.invoke(CH.historyList),
+  listHistory: (): Promise<IpcResult<HistoryItem[]>> => ipcRenderer.invoke(CH.historyList),
 
-  removeHistory: (id: string): Promise<IpcResult<HistoryEntry[]>> =>
+  removeHistory: (id: string): Promise<IpcResult<HistoryItem[]>> =>
     ipcRenderer.invoke(CH.historyRemove, { id }),
 
   clearHistory: (): Promise<IpcResult<{ ok: boolean }>> => ipcRenderer.invoke(CH.historyClear),
+
+  /** 一键重跑：按记录里的原参数重新入队（TODO-07） */
+  rerunHistory: (id: string): Promise<IpcResult<QueueItem[]>> =>
+    ipcRenderer.invoke(CH.historyRerun, { id }),
 
   /* ── 系统 ─────────────────────────────────────────────── */
   openFolder: (path: string, mkdir = false): Promise<IpcResult<{ ok: boolean }>> =>
@@ -143,6 +147,15 @@ const api = {
 
   windowControl: (action: 'minimize' | 'maximize' | 'close'): Promise<IpcResult<{ ok: boolean }>> =>
     ipcRenderer.invoke(CH.windowControl, { action }),
+
+  /* ── 日志与诊断（TODO-11） ─────────────────────────────── */
+  openLogs: (): Promise<IpcResult<{ ok: boolean }>> => ipcRenderer.invoke(CH.openLogs),
+
+  jobLog: (jobId: string): Promise<IpcResult<{ lines: string[] }>> =>
+    ipcRenderer.invoke(CH.jobLog, { jobId }),
+
+  exportDiagnostics: (): Promise<IpcResult<{ path: string | null }>> =>
+    ipcRenderer.invoke(CH.exportDiagnostics),
 
   /**
    * 拖拽落地文件的真实路径。

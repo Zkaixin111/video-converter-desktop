@@ -1504,6 +1504,19 @@ svg {
   background: var(--bg-surface);
   border-color: var(--primary-100);
 }
+.chip-ok {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+/* 历史按结局筛选（TODO-07）：失败与取消也进历史后，不筛就等于在成功记录里翻失败 */
+.history-filter {
+  margin: -4px 0 12px;
+}
+.empty-block.is-inline {
+  padding: 28px 16px;
+}
 
 /* 失败原因：直接写在卡片里，不必让用户去翻日志 */
 .queue-row .q-error {
@@ -2350,6 +2363,86 @@ svg {
 
 .btn-primary-sm:hover {
   background: var(--primary-600);
+}
+
+/* ===========================================================================
+   弹层（TODO-11 日志查看）
+   =========================================================================== */
+.dlg-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(15, 23, 42, 0.42);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.dlg {
+  width: 100%;
+  max-width: 680px;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--r-xl);
+  border: 1px solid var(--border-default);
+  background: var(--bg-surface);
+  box-shadow: var(--sh-lg);
+  overflow: hidden;
+}
+.dlg-head {
+  flex: none;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--border-default);
+}
+.dlg-title {
+  font-size: 14px;
+  font-weight: 600;
+}
+.dlg-sub {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.dlg-body {
+  flex: 1;
+  min-height: 120px;
+  overflow: auto;
+  padding: 12px 16px;
+}
+.dlg-empty {
+  padding: 24px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+.dlg-log {
+  margin: 0;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.dlg-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--border-default);
+  background: var(--bg-app);
+}
+.dlg-spacer {
+  flex: 1;
 }
 
 /* ===========================================================================

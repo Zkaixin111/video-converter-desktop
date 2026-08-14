@@ -7,6 +7,7 @@
 import Store from 'electron-store';
 import { CONTAINER_ORDER } from '../shared/containers';
 import { DEFAULT_TEMPLATE } from '../shared/outputName';
+import { clampConcurrency } from '../shared/queue';
 import type { ContainerKey, PresetTier, Settings } from '../shared/types';
 
 function defaultPresets(): Record<ContainerKey, PresetTier> {
@@ -30,6 +31,14 @@ export const DEFAULT_SETTINGS: Settings = {
   // 默认「共用全局参数」+「失败继续」：这两条是打扰最小的组合
   queueMode: 'shared',
   failurePolicy: 'continue',
+  // 转完弹一条汇总通知：批量是「设好就走」的场景，不通知就只能靠回来看看
+  notifyOnFinish: true,
+  // 默认仍是串行（TODO-10）：并发是用户主动要的加速，不是升级送的
+  concurrency: 1,
+  // 关窗最小化到托盘继续转（TODO-14）；关掉则回到「关窗即退出」
+  closeToTray: true,
+  // 强杀后重启恢复未完成任务（TODO-12）；正常退出不会留下待恢复的队列
+  restoreQueue: true,
 };
 
 interface Schema {
@@ -51,6 +60,12 @@ export function getSettings(): Settings {
     quality: { ...(saved?.quality ?? {}) },
     naming: { ...DEFAULT_SETTINGS.naming, ...(saved?.naming ?? {}) },
     theme: saved?.theme ?? DEFAULT_SETTINGS.theme,
+    // 并发数按 1–4 钳住：配置文件被手改坏过也不至于让调度器跑飞
+    concurrency: clampConcurrency(saved?.concurrency),
+    // 三个布尔值用显式判定而不是展开：undefined 会盖掉默认值，null 也会
+    notifyOnFinish: saved?.notifyOnFinish ?? DEFAULT_SETTINGS.notifyOnFinish,
+    closeToTray: saved?.closeToTray ?? DEFAULT_SETTINGS.closeToTray,
+    restoreQueue: saved?.restoreQueue ?? DEFAULT_SETTINGS.restoreQueue,
   };
 }
 

@@ -25,10 +25,18 @@ export const CH = {
   setSettings: 'app:setSettings',
   copyText: 'app:copyText',
   windowControl: 'window:control',
+  /** 打开日志所在目录（TODO-11） */
+  openLogs: 'app:openLogs',
+  /** 取某个任务的日志片段（TODO-11） */
+  jobLog: 'app:jobLog',
+  /** 导出诊断包（TODO-11） */
+  exportDiagnostics: 'app:exportDiagnostics',
 
   historyList: 'history:list',
   historyRemove: 'history:remove',
   historyClear: 'history:clear',
+  /** 按历史条目重跑（TODO-07） */
+  historyRerun: 'history:rerun',
 
   /** 批量队列 */
   queueEnqueue: 'queue:enqueue',
@@ -38,6 +46,10 @@ export const CH = {
   queueRemove: 'queue:remove',
   queueRetry: 'queue:retry',
   queueResume: 'queue:resume',
+  /** 主动暂停队列（TODO-13）：与「失败即暂停」共用恢复入口 */
+  queuePause: 'queue:pause',
+  /** 调整等待中任务的位次（TODO-13） */
+  queueReorder: 'queue:reorder',
 } as const;
 
 /** 推送型事件 */

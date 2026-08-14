@@ -9,7 +9,7 @@
  *   · 2 个及以上 → 换成批次列表 + 汇总判定条，整批共用同一个目标格式
  *   · 无论几个，「加入下一个视频 / 一次选多个」的入口都在同一位置，上限 10 个
  */
-import { useMemo, type ReactElement } from 'react';
+import { useMemo, useState, type ReactElement } from 'react';
 import { MAX_BATCH_TOTAL } from '../../../shared/batch';
 import { CONTAINERS } from '../../../shared/containers';
 import { formatBytes } from '../../../shared/estimate';
@@ -22,6 +22,7 @@ import { BatchList, BatchSummary } from '../components/convert/BatchList';
 import { ProgressPanel } from '../components/convert/ProgressPanel';
 import { ResultCard } from '../components/convert/ResultCard';
 import { ErrorPanel } from '../components/convert/ErrorPanel';
+import { LogDialog } from '../components/ui/LogDialog';
 import { Button } from '../components/ui/Button';
 import { Icon } from '../components/ui/Icon';
 
@@ -101,6 +102,9 @@ export function ConvertPage(): ReactElement {
   const tryAnotherFormat = useAppStore((s) => s.tryAnotherFormat);
   const copyDiagnostics = useAppStore((s) => s.copyDiagnostics);
   const toast = useAppStore((s) => s.toast);
+
+  /** 本次任务的日志弹层（TODO-11） */
+  const [logOpen, setLogOpen] = useState(false);
 
   const engineMissing = caps ? !caps.ffmpeg.ok : false;
   const empty = stage === 'empty' || stage === 'probing';
@@ -243,11 +247,21 @@ export function ConvertPage(): ReactElement {
           {stage === 'error' && error ? (
             <ErrorPanel
               error={error}
+              jobId={myJobId}
+              onViewLog={() => setLogOpen(true)}
               onCopyDiagnostics={() => void copyDiagnostics()}
               onTryAnother={() => void tryAnotherFormat()}
             />
           ) : null}
         </div>
+      ) : null}
+
+      {logOpen && myJobId ? (
+        <LogDialog
+          jobId={myJobId}
+          fileName={meta?.fileName ?? ''}
+          onClose={() => setLogOpen(false)}
+        />
       ) : null}
     </section>
   );
