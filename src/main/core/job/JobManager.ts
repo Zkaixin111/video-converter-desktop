@@ -19,8 +19,11 @@ import { randomUUID } from 'node:crypto';
 import { AppError } from '../../../shared/errors';
 import { canEditTask, canRemoveTask, canRetryTask, clampConcurrency } from '../../../shared/queue';
 import type {
+  AudioFormat,
+  AudioPlanResult,
   BatchSummary,
   ContainerKey,
+  ConversionMode,
   FailurePolicy,
   JobSnapshot,
   ConflictPolicy,
@@ -35,8 +38,8 @@ import type {
   TaskParams,
 } from '../../../shared/types';
 import { DEFAULT_TEMPLATE } from '../../../shared/outputName';
-import { planConversion } from '../ffmpeg/planner';
-import { resolveOutputPath } from '../fs/outputPath';
+import { planAudioExtraction, planConversion } from '../ffmpeg/planner';
+import { resolveAudioPath, resolveOutputPath, type ResolveOptions } from '../fs/outputPath';
 import { ConversionJob } from './ConversionJob';
 
 export interface EnqueueInput {
@@ -48,11 +51,16 @@ export interface EnqueueInput {
   /** 非空 = 任务自带参数 */
   custom: TaskParams | null;
   outputDir?: string | null;
+  /** 非空 = 这条是音频提取（TODO-20），此时 target 不参与编码 */
+  audio?: AudioFormat | null;
 }
 
 export interface EnqueuedJob {
   item: QueueItem;
-  plan: PlanResult;
+  /** 视频规划的产物；音频提取任务为 null */
+  plan: PlanResult | null;
+  /** 音频提取规划的产物；视频任务为 null */
+  audioPlan: AudioPlanResult | null;
 }
 
 /**
@@ -66,10 +74,23 @@ export interface JobRunner {
   cancel(): Promise<void>;
 }
 
+/**
+ * 「可执行计划」的最小视图。
+ *
+ * ConversionJob 真正用到的只有 args / mode / preset 三样，
+ * 收窄成这个接口后，音频提取计划（没有视频流、没有 QualitySpec）也能直接跑，
+ * 不必为了对齐 PlanResult 去编造一个假的画质规格。
+ */
+export interface RunnablePlan {
+  args: string[];
+  mode: ConversionMode;
+  preset: PresetTier;
+}
+
 export interface JobFactoryOptions {
   jobId: string;
   meta: MediaMeta;
-  plan: PlanResult;
+  plan: RunnablePlan;
   outputPath: string;
   target: ContainerKey;
   /**
@@ -77,6 +98,10 @@ export interface JobFactoryOptions {
    * null = 不限制：串行时交给 ffmpeg 自己决定，args 与老版本完全一致。
    */
   threads?: number | null;
+  /** 音频提取产物（TODO-20）：校验时不再要求有视频流 */
+  audioOnly?: boolean;
+  /** 音频目标格式（TODO-20）：原样透传给 ConversionJob，快照与历史都要用 */
+  audio?: AudioFormat | null;
   onProgress?: (payload: ProgressPayload) => void;
   onState?: (snapshot: JobSnapshot) => void;
 }
@@ -125,7 +150,10 @@ interface Entry {
   custom: TaskParams | null;
   outputDir: string | null;
   outputPath: string;
-  plan: PlanResult;
+  /** 非空 = 音频提取任务（TODO-20），此时 `plan` 为 null、`audioPlan` 有值 */
+  audio: AudioFormat | null;
+  plan: PlanResult | null;
+  audioPlan: AudioPlanResult | null;
   status: QueueItem['status'];
   progress?: ProgressPayload;
   result?: QueueItem['result'];
@@ -137,6 +165,27 @@ interface Entry {
 /** Windows 路径大小写不敏感，预定表统一小写比较 */
 function norm(p: string): string {
   return p.toLowerCase();
+}
+
+/**
+ * 把队列条目的规划结果收窄成「可执行计划」。
+ *
+ * 音频提取直接抽轨时视作 `copy`（很快、不重编码），需要转码时视作 `transcode`
+ * —— 进度条与「预计耗时」靠这个区分，与视频那套口径一致。
+ */
+function runnablePlan(entry: Entry): RunnablePlan | null {
+  if (entry.audioPlan) {
+    const p = entry.audioPlan;
+    return {
+      args: p.args,
+      mode: p.audioAction === 'copy' ? 'copy' : 'transcode',
+      preset: p.preset,
+    };
+  }
+  if (entry.plan) {
+    return { args: entry.plan.args, mode: entry.plan.mode, preset: entry.plan.preset };
+  }
+  return null;
 }
 
 export class JobManager {
@@ -273,23 +322,33 @@ export class JobManager {
     const naming = this.naming();
     const out: EnqueuedJob[] = [];
     for (const [idx, input] of inputs.entries()) {
-      const plan = planConversion({
-        meta: input.meta,
-        target: input.target,
-        options: { preset: input.preset, overrides: this.overrides(input.target) },
-      });
+      const audio = input.audio ?? null;
+      const plan = audio
+        ? null
+        : planConversion({
+            meta: input.meta,
+            target: input.target,
+            options: { preset: input.preset, overrides: this.overrides(input.target) },
+          });
+      const audioPlan = audio
+        ? planAudioExtraction({ meta: input.meta, format: audio, preset: input.preset })
+        : null;
+
+      const pathOptions: ResolveOptions = {
+        outputDir: input.outputDir ?? null,
+        exists: (p) => this.exists(p),
+        template: naming.template,
+        conflict: naming.conflict,
+        index: inputs.length > 1 ? idx : null,
+        total: inputs.length,
+        preset: input.preset,
+      };
 
       let outputPath: string;
       try {
-        outputPath = resolveOutputPath(input.meta.path, input.target, {
-          outputDir: input.outputDir ?? null,
-          exists: (p) => this.exists(p),
-          template: naming.template,
-          conflict: naming.conflict,
-          index: inputs.length > 1 ? idx : null,
-          total: inputs.length,
-          preset: input.preset,
-        });
+        outputPath = audio
+          ? resolveAudioPath(input.meta.path, audio, pathOptions)
+          : resolveOutputPath(input.meta.path, input.target, pathOptions);
       } catch (err) {
         // 「同名就跳过」策略：这个文件不生成任务，其余照常入队
         if (err instanceof AppError && err.code === 'E_OUTPUT_SKIPPED') continue;
@@ -305,13 +364,15 @@ export class JobManager {
         custom: input.custom,
         outputDir: input.outputDir ?? null,
         outputPath,
+        audio,
         plan,
+        audioPlan,
         status: 'pending',
         createdAt: Date.now(),
         job: null,
       };
       this.entries.push(entry);
-      out.push({ item: toItem(entry), plan });
+      out.push({ item: toItem(entry), plan, audioPlan });
     }
 
     // 入队数按真正建出来的任务算：「同名跳过」的那些没进队列，不该算进分母
@@ -371,26 +432,36 @@ export class JobManager {
     }
 
     this.reserved.delete(norm(entry.outputPath));
-    const plan = planConversion({
-      meta: entry.meta,
-      target: next.target,
-      options: { preset: next.preset, overrides: this.overrides(next.target) },
-    });
+    // 音频提取任务改的是音质档位（码率），目标容器那一套不参与
+    const audioPlan = entry.audio
+      ? planAudioExtraction({ meta: entry.meta, format: entry.audio, preset: next.preset })
+      : null;
+    const plan = entry.audio
+      ? null
+      : planConversion({
+          meta: entry.meta,
+          target: next.target,
+          options: { preset: next.preset, overrides: this.overrides(next.target) },
+        });
     const naming = this.naming();
-    const outputPath = resolveOutputPath(entry.meta.path, next.target, {
+    const pathOptions: ResolveOptions = {
       outputDir: entry.outputDir,
       exists: (p) => this.exists(p),
       template: naming.template,
       // 改参数时用户就是想让它跑起来，重名一律按加序号处理
       conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
       preset: next.preset,
-    });
+    };
+    const outputPath = entry.audio
+      ? resolveAudioPath(entry.meta.path, entry.audio, pathOptions)
+      : resolveOutputPath(entry.meta.path, next.target, pathOptions);
     this.reserved.add(norm(outputPath));
 
     entry.target = next.target;
     entry.preset = next.preset;
     entry.custom = next.custom;
     entry.plan = plan;
+    entry.audioPlan = audioPlan;
     entry.outputPath = outputPath;
     // 改完参数后要清掉旧的失败痕迹，否则界面会显示上一次的错误
     entry.error = undefined;
@@ -461,23 +532,32 @@ export class JobManager {
     }
 
     this.reserved.delete(norm(entry.outputPath));
-    const plan = planConversion({
-      meta: entry.meta,
-      target: entry.target,
-      options: { preset: entry.preset, overrides: this.overrides(entry.target) },
-    });
+    const audioPlan = entry.audio
+      ? planAudioExtraction({ meta: entry.meta, format: entry.audio, preset: entry.preset })
+      : null;
+    const plan = entry.audio
+      ? null
+      : planConversion({
+          meta: entry.meta,
+          target: entry.target,
+          options: { preset: entry.preset, overrides: this.overrides(entry.target) },
+        });
     const naming = this.naming();
-    const outputPath = resolveOutputPath(entry.meta.path, entry.target, {
+    const pathOptions: ResolveOptions = {
       outputDir: entry.outputDir,
       exists: (p) => this.exists(p),
       template: naming.template,
       // 重试同理：重试意味着「就是要转」，跳过策略在这里不成立
       conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
       preset: entry.preset,
-    });
+    };
+    const outputPath = entry.audio
+      ? resolveAudioPath(entry.meta.path, entry.audio, pathOptions)
+      : resolveOutputPath(entry.meta.path, entry.target, pathOptions);
     this.reserved.add(norm(outputPath));
 
     entry.plan = plan;
+    entry.audioPlan = audioPlan;
     entry.outputPath = outputPath;
     entry.status = 'pending';
     entry.error = undefined;
@@ -529,16 +609,21 @@ export class JobManager {
       const next = this.entries.find((e) => e.status === 'pending');
       if (!next) return;
 
+      const runnable = runnablePlan(next);
+      if (!runnable) return;
+
       this.activeIds.add(next.jobId);
       next.status = 'preparing';
       const job = this.makeJob({
         // 关键：沿用队列条目的 jobId，事件与卡片才对得上
         jobId: next.jobId,
         meta: next.meta,
-        plan: next.plan,
+        plan: runnable,
         outputPath: next.outputPath,
         target: next.target,
         threads,
+        audioOnly: next.audio !== null,
+        audio: next.audio,
         onProgress: (payload) => {
           next.progress = payload;
           this.sink.onProgress?.(payload);
@@ -638,7 +723,8 @@ function toItem(entry: Entry): QueueItem {
     preset: entry.preset,
     custom: entry.custom,
     status: entry.status,
-    mode: entry.plan?.mode ?? null,
+    mode: runnablePlan(entry)?.mode ?? null,
+    audio: entry.audio,
     sourceSizeBytes: entry.meta.sizeBytes,
     progress: entry.progress,
     result: entry.result,
@@ -654,6 +740,7 @@ function activeJobSnapshot(entry: Entry): JobSnapshot {
     fileName: entry.meta.fileName,
     sourcePath: entry.meta.path,
     target: entry.target,
+    audio: entry.audio,
     progress: entry.progress,
     result: entry.result,
     error: entry.error,

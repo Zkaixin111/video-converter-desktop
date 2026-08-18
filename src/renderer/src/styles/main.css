@@ -1504,6 +1504,12 @@ svg {
   background: var(--bg-surface);
   border-color: var(--primary-100);
 }
+/* 「仅音频」标识（TODO-20）：与「自定义/跟随全局」区分开，用琥珀色那套中性提示色 */
+.chip-audio {
+  color: var(--warn);
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
 .chip-ok {
   color: var(--success);
   background: var(--success-bg);

@@ -12,21 +12,26 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { AppError, toAppError } from '../../../shared/errors';
 import type {
+  AudioFormat,
   ContainerKey,
   JobError,
   JobResult,
   JobSnapshot,
   MediaMeta,
-  PlanResult,
   ProgressPayload,
 } from '../../../shared/types';
 import { runConversion, type RunHandle } from '../ffmpeg/runner';
+import type { RunnablePlan } from './JobManager';
 import { verifyOutput } from '../ffmpeg/verify';
 import { cleanupPart, partPathFor } from '../fs/temp';
 
 export interface ConversionJobOptions {
   meta: MediaMeta;
-  plan: PlanResult;
+  /**
+   * 真正用到的只有 args / mode / preset。
+   * 收窄成这个最小视图后，音频提取计划也能直接跑（见 JobManager.RunnablePlan）。
+   */
+  plan: RunnablePlan;
   outputPath: string;
   target?: ContainerKey;
   /**
@@ -41,6 +46,10 @@ export interface ConversionJobOptions {
    * null / undefined = 不加 `-threads`，args 与串行时逐字节一致。
    */
   threads?: number | null;
+  /** 音频提取产物（TODO-20）：校验时不再要求有视频流 */
+  audioOnly?: boolean;
+  /** 音频目标格式（TODO-20）：快照带上它，历史才认得出这是「抽音频」而不是「转视频」 */
+  audio?: AudioFormat | null;
   onProgress?: (payload: ProgressPayload) => void;
   onState?: (snapshot: JobSnapshot) => void;
 }
@@ -48,10 +57,12 @@ export interface ConversionJobOptions {
 export class ConversionJob {
   readonly id: string;
   private readonly meta: MediaMeta;
-  private readonly plan: PlanResult;
+  private readonly plan: RunnablePlan;
   private readonly outputPath: string;
   private readonly target?: ContainerKey;
   private readonly threads?: number | null;
+  private readonly audioOnly: boolean;
+  private readonly audio?: AudioFormat | null;
   private readonly onProgress?: (payload: ProgressPayload) => void;
   private readonly onState?: (snapshot: JobSnapshot) => void;
 
@@ -70,6 +81,8 @@ export class ConversionJob {
     this.outputPath = options.outputPath;
     this.target = options.target;
     this.threads = options.threads;
+    this.audioOnly = options.audioOnly === true;
+    this.audio = options.audio ?? null;
     this.onProgress = options.onProgress;
     this.onState = options.onState;
   }
@@ -91,6 +104,7 @@ export class ConversionJob {
       target: this.target,
       // 档位来自规划结果：失败/取消没有 result，历史也只能从这里拿
       preset: this.plan.preset,
+      audio: this.audio,
       sourceSizeBytes: this.meta.sizeBytes,
       progress: this.progress,
       result: this.result,
@@ -147,7 +161,9 @@ export class ConversionJob {
       renamed = true;
 
       // ② 再校验（顺序不能反）
-      const verify = await verifyOutput(this.meta, this.outputPath);
+      const verify = await verifyOutput(this.meta, this.outputPath, {
+        audioOnly: this.audioOnly,
+      });
       let outputSize = 0;
       try {
         outputSize = (await fs.stat(this.outputPath)).size;

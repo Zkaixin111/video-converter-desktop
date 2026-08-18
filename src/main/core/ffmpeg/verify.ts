@@ -20,7 +20,19 @@ export interface VerifyResult {
 /** 容器之间对时长的舍入不同，给 0.2s 容差（计划里定死的口径） */
 const DURATION_TOLERANCE_SEC = 0.2;
 
-export async function verifyOutput(srcMeta: MediaMeta, outPath: string): Promise<VerifyResult> {
+export interface VerifyOptions {
+  /**
+   * 音频提取产物（TODO-20）。
+   * 它**本来就没有视频流**，沿用视频那套判定会把它判成失败。
+   */
+  audioOnly?: boolean;
+}
+
+export async function verifyOutput(
+  srcMeta: MediaMeta,
+  outPath: string,
+  options: VerifyOptions = {},
+): Promise<VerifyResult> {
   let size = 0;
   try {
     const stat = await fs.stat(outPath);
@@ -37,7 +49,10 @@ export async function verifyOutput(srcMeta: MediaMeta, outPath: string): Promise
     return { ok: false, detail: `输出文件无法解析：${(err as Error).message}` };
   }
 
-  if (srcMeta.video && !out.video) {
+  if (options.audioOnly) {
+    // 音频提取：只要有声轨就算过，画面本就该被丢掉
+    if (!out.audio) return { ok: false, detail: '输出文件里没有音轨' };
+  } else if (srcMeta.video && !out.video) {
     return { ok: false, detail: '输出文件里没有视频流' };
   }
   if (srcMeta.audio && !out.audio) {

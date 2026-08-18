@@ -6,6 +6,12 @@
  *   2. 不 import electron / node:fs —— 这是它能被单测、也能在将来迁移到 Tauri 原样搬走的前提。
  */
 import {
+  AUDIO_FORMATS,
+  audioBitrateFor,
+  estimateAudioBytes,
+  isAudioFormat,
+} from '../../../shared/audio';
+import {
   CONTAINERS,
   isContainerKey,
   isPresetTier,
@@ -13,6 +19,8 @@ import {
 } from '../../../shared/containers';
 import { AppError } from '../../../shared/errors';
 import type {
+  AudioFormat,
+  AudioPlanResult,
   ContainerKey,
   ConversionMode,
   MediaMeta,
@@ -192,4 +200,102 @@ export function planConversion(input: PlanInput): PlanResult {
         };
 
   return { mode, videoAction, audioAction, args, warnings, estimate, preset, quality };
+}
+
+/* ──────────────────────────────────────────────────────────
+ * 音频提取（TODO-20）
+ *
+ * 与视频规划并列，不共用判定逻辑：
+ *   · 输入校验反过来 —— 视频转换要求「必须有画面」，音频提取要求「必须有声音」
+ *   · 没有 `-map 0:v:0`，改 `-vn`（丢掉画面，否则 ffmpeg 会把第一条视频流一起写进去）
+ *   · 体积按「时长 × 码率」算，这个场景下准得多（视频那套是按源体积乘系数估的）
+ * ────────────────────────────────────────────────────────── */
+
+/** 音频重编码约 0.08× 实时；纯抽取接近磁盘速度 */
+const AUDIO_ENCODE_SPEED_FACTOR = 0.08;
+const AUDIO_COPY_SPEED_FACTOR = 0.02;
+
+export interface AudioPlanInput {
+  meta: MediaMeta;
+  format: AudioFormat;
+  /** 音质档位（决定码率）；非法值按 standard */
+  preset?: PresetTier;
+}
+
+export function planAudioExtraction(input: AudioPlanInput): AudioPlanResult {
+  const { meta, format } = input;
+  const preset: PresetTier = isPresetTier(input.preset) ? input.preset : 'standard';
+
+  if (!isAudioFormat(format)) {
+    throw new AppError('E_UNSUPPORTED_TARGET', `不支持的音频格式：${String(format)}`);
+  }
+  if (!meta.audio) {
+    throw new AppError(
+      'E_NO_AUDIO_STREAM',
+      '这个文件里没有音轨，没法提取音频。',
+      { hint: '只有带声音的文件才能提取音频。' },
+    );
+  }
+
+  const spec = AUDIO_FORMATS[format];
+  const src = meta.audio;
+  const canCopy = spec.codecs.includes(src.codec);
+  const audioAction: 'copy' | 'encode' = canCopy ? 'copy' : 'encode';
+  const bitrate = canCopy ? (src.bitrateKbps ? `${src.bitrateKbps}k` : null) : audioBitrateFor(format, preset);
+
+  // -vn 是关键：不加它，ffmpeg 会把源文件的画面一起写进 mp3/m4a
+  const args: string[] = ['-vn', '-map', '0:a:0'];
+  if (canCopy) {
+    args.push('-c:a', 'copy');
+  } else {
+    args.push('-c:a', spec.encoder);
+    if (bitrate) args.push('-b:a', bitrate);
+  }
+  args.push('-f', spec.muxer);
+
+  const warnings: PlanWarning[] = [];
+  if (meta.audioTracks > 1) {
+    warnings.push({
+      code: 'EXTRA_AUDIO_DROPPED',
+      message: `文件有 ${meta.audioTracks} 条音轨，当前只提取第一条。`,
+    });
+  }
+
+  const durationSec = meta.durationSec > 0 ? meta.durationSec : 0;
+  // 重编码取目标码率；直接抽取时源码率未知，就按目标格式的标准码率估，宁可高估
+  const sizeBitrate = bitrate ?? audioBitrateFor(format, preset);
+  const estimateBytes = estimateAudioBytes(durationSec, sizeBitrate);
+
+  const tierNote: Record<PresetTier, string> = {
+    high: '音质优先，文件相对更大',
+    standard: '音质与体积均衡',
+    small: '体积优先，音质有可闻损失',
+  };
+
+  const estimate = canCopy
+    ? {
+        kind: 'instant' as const,
+        approxSeconds: Math.max(1, Math.round(durationSec * AUDIO_COPY_SPEED_FACTOR)),
+        qualityNote: '音质 100% 保留',
+      }
+    : {
+        kind: 'encoded' as const,
+        approxSeconds: Math.max(
+          2,
+          Math.round(durationSec * AUDIO_ENCODE_SPEED_FACTOR),
+        ),
+        qualityNote: tierNote[preset],
+      };
+
+  return {
+    format,
+    audioAction,
+    encoder: canCopy ? 'copy' : spec.encoder,
+    bitrate,
+    args,
+    warnings,
+    estimate,
+    estimateBytes,
+    preset,
+  };
 }

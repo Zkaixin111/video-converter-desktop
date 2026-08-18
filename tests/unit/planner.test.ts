@@ -8,7 +8,7 @@
  * 覆盖三个维度：8 个容器的判定 × 4 类源文件 × 参数组装细节。
  */
 import { describe, expect, it } from 'vitest';
-import { planConversion } from '../../src/main/core/ffmpeg/planner';
+import { planAudioExtraction, planConversion } from '../../src/main/core/ffmpeg/planner';
 import { AppError } from '../../src/shared/errors';
 import type { ContainerKey } from '../../src/shared/types';
 import { makeAudio, makeMeta, makeVideo } from '../helpers/meta';
@@ -355,5 +355,133 @@ describe('planConversion · 画质档位（P1-03）', () => {
     const plan = planConversion({ meta: makeMeta(), target: 'webm', options: { preset: 'high' } });
     expect(plan.mode).toBe('transcode');
     expect(plan.warnings.some((w) => w.code === 'VFR_SOURCE')).toBe(false);
+  });
+});
+
+/**
+ * 音频提取（TODO-20）。
+ *
+ * 与视频判定矩阵并列，但规则简单得多：只有「源音轨是不是目标编码」一个分叉。
+ * 三条必须钉死的纪律：
+ *   1. **必须带 -vn**：不带的话 ffmpeg 会把画面一起写进 mp3，产出 0 字节或废文件
+ *   2. **必须 -map 0:a:0**：多音轨时不指定会默认全抽，第一条之外的音轨被塞进同一个文件
+ *   3. copy 时不带 -b:a：直接抽轨时指定码率会被 ffmpeg 忽略，写出来是误导
+ */
+describe('planAudioExtraction · 前置校验', () => {
+  it('目标格式不是 mp3/m4a → E_UNSUPPORTED_TARGET', () => {
+    expectCode(
+      () => planAudioExtraction({ meta: makeMeta(), format: 'wav' as never }),
+      'E_UNSUPPORTED_TARGET',
+    );
+  });
+
+  it('文件没有音轨 → E_NO_AUDIO_STREAM', () => {
+    expectCode(
+      () => planAudioExtraction({ meta: makeMeta({ audio: null, audioTracks: 0 }), format: 'mp3' }),
+      'E_NO_AUDIO_STREAM',
+    );
+  });
+});
+
+describe('planAudioExtraction · copy 与重编码', () => {
+  it('源音轨正好是 mp3 → 直接抽取，音质 100% 保留', () => {
+    const meta = makeMeta({ audio: makeAudio({ codec: 'mp3', bitrateKbps: 320 }) });
+    const plan = planAudioExtraction({ meta, format: 'mp3' });
+
+    expect(plan.audioAction).toBe('copy');
+    expect(plan.encoder).toBe('copy');
+    expect(plan.bitrate).toBe('320k');
+    expect(plan.args).toEqual(['-vn', '-map', '0:a:0', '-c:a', 'copy', '-f', 'mp3']);
+    // 直接抽轨不带码率参数：写了也会被 ffmpeg 忽略
+    expect(plan.args).not.toContain('-b:a');
+    expect(plan.estimate.kind).toBe('instant');
+  });
+
+  it('源音轨是 aac、目标是 mp3 → 必须重编码', () => {
+    const plan = planAudioExtraction({ meta: makeMeta(), format: 'mp3' });
+
+    expect(plan.audioAction).toBe('encode');
+    expect(plan.encoder).toBe('libmp3lame');
+    expect(plan.bitrate).toBe('192k');
+    expect(plan.args).toEqual([
+      '-vn',
+      '-map',
+      '0:a:0',
+      '-c:a',
+      'libmp3lame',
+      '-b:a',
+      '192k',
+      '-f',
+      'mp3',
+    ]);
+    expect(plan.estimate.kind).toBe('encoded');
+  });
+
+  it('源音轨是 aac、目标是 m4a → 直接抽取（m4a 就是换壳的 MP4）', () => {
+    const plan = planAudioExtraction({ meta: makeMeta(), format: 'm4a' });
+
+    expect(plan.audioAction).toBe('copy');
+    expect(plan.args).toEqual(['-vn', '-map', '0:a:0', '-c:a', 'copy', '-f', 'mp4']);
+  });
+
+  it('档位只影响重编码的码率，不影响 copy', () => {
+    const meta = makeMeta({ audio: makeAudio({ codec: 'mp3', bitrateKbps: 128 }) });
+    const copy = planAudioExtraction({ meta, format: 'mp3', preset: 'high' });
+    expect(copy.bitrate).toBe('128k');
+
+    const high = planAudioExtraction({ meta: makeMeta(), format: 'mp3', preset: 'high' });
+    const small = planAudioExtraction({ meta: makeMeta(), format: 'mp3', preset: 'small' });
+    expect(high.bitrate).toBe('256k');
+    expect(small.bitrate).toBe('128k');
+  });
+
+  it('非法档位回落 standard', () => {
+    const plan = planAudioExtraction({ meta: makeMeta(), format: 'mp3', preset: 'ultra' as never });
+    expect(plan.preset).toBe('standard');
+    expect(plan.bitrate).toBe('192k');
+  });
+
+  /** -vn 是这条功能的命脉：漏掉它，抽出来的「mp3」里会带着一整套画面 */
+  it('任何格式、任何分支都带 -vn 与 -map 0:a:0', () => {
+    for (const format of ['mp3', 'm4a'] as const) {
+      for (const codec of ['aac', 'mp3', 'opus'] as const) {
+        const plan = planAudioExtraction({
+          meta: makeMeta({ audio: makeAudio({ codec }) }),
+          format,
+        });
+        expect(plan.args[0]).toBe('-vn');
+        expect(plan.args.slice(1, 3)).toEqual(['-map', '0:a:0']);
+      }
+    }
+  });
+});
+
+describe('planAudioExtraction · 体积估算与提醒', () => {
+  it('体积按「时长 × 码率」算，重编码时随档位变化', () => {
+    const meta = makeMeta({ durationSec: 600 });
+    const high = planAudioExtraction({ meta, format: 'mp3', preset: 'high' });
+    const small = planAudioExtraction({ meta, format: 'mp3', preset: 'small' });
+    // 600 秒 = 10 分钟；256k → 约 19.6 MB，128k → 约 9.8 MB
+    expect(high.estimateBytes).toBeGreaterThan(small.estimateBytes);
+    expect(high.estimateBytes).toBeCloseTo(600 * 256 * 125 * 1.02, -2);
+  });
+
+  it('多音轨只抽第一条，并在 warnings 里说明', () => {
+    const meta = makeMeta({ audioTracks: 3 });
+    const plan = planAudioExtraction({ meta, format: 'mp3' });
+    expect(plan.warnings.some((w) => w.code === 'EXTRA_AUDIO_DROPPED')).toBe(true);
+    expect(plan.warnings[0].message).toContain('3');
+  });
+
+  it('单音轨不产生任何提醒', () => {
+    const plan = planAudioExtraction({ meta: makeMeta({ audioTracks: 1 }), format: 'mp3' });
+    expect(plan.warnings).toHaveLength(0);
+  });
+
+  it('源音轨码率未知时，copy 的 bitrate 为 null 但体积仍按标准码率估（不低估）', () => {
+    const meta = makeMeta({ audio: makeAudio({ codec: 'mp3', bitrateKbps: 0 }) });
+    const plan = planAudioExtraction({ meta, format: 'mp3' });
+    expect(plan.bitrate).toBeNull();
+    expect(plan.estimateBytes).toBeGreaterThan(0);
   });
 });

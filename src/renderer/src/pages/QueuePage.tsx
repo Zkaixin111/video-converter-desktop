@@ -22,6 +22,7 @@
  */
 import { useEffect, useMemo, useState, type ReactElement } from 'react';
 import { CONTAINERS, CONTAINER_ORDER } from '../../../shared/containers';
+import { AUDIO_FORMATS } from '../../../shared/audio';
 import { canEditTask, canRemoveTask, canRetryTask } from '../../../shared/queue';
 import type {
   ContainerKey,
@@ -103,11 +104,16 @@ function HistoryRow({ entry }: { entry: HistoryItem }): ReactElement {
 
   return (
     <div className={`queue-row is-history${entry.status === 'failed' ? ' is-failed' : ''}`}>
-      <div className="q-ico">{CONTAINERS[entry.target].label}</div>
+      <div className="q-ico">
+        {entry.audio ? AUDIO_FORMATS[entry.audio].label : CONTAINERS[entry.target].label}
+      </div>
       <div className="q-body">
         <div className="q-name" title={succeeded ? entry.outputPath : entry.sourcePath}>
           <span className="q-fname">{entry.fileName}</span> <span className="arrow">→</span>{' '}
-          <span>{CONTAINERS[entry.target].label}</span>
+          <span>
+            {entry.audio ? AUDIO_FORMATS[entry.audio].label : CONTAINERS[entry.target].label}
+          </span>
+          {entry.audio ? <span className="chip chip-audio">仅音频</span> : null}
           <span className={`chip ${status.chip}`}>{status.label}</span>
         </div>
 
@@ -186,25 +192,29 @@ function TaskEditor({ item, onClose }: { item: QueueItem; onClose: () => void })
 
   return (
     <div className="queue-edit">
-      <div className="qe-row">
-        <span className="qe-label">输出格式</span>
-        <div className="fmt-mini" role="group" aria-label="输出格式">
-          {CONTAINER_ORDER.map((key) => (
-            <button
-              key={key}
-              type="button"
-              className="fmt-chip"
-              aria-pressed={target === key}
-              onClick={() => setTarget(key)}
-            >
-              {CONTAINERS[key].label}
-            </button>
-          ))}
+      {/* 音频提取任务没有「输出格式」可改：它的目标格式是 mp3/m4a，
+          由转换页的输出类型决定，这里改容器只会让用户以为生效了实际没生效 */}
+      {item.audio ? null : (
+        <div className="qe-row">
+          <span className="qe-label">输出格式</span>
+          <div className="fmt-mini" role="group" aria-label="输出格式">
+            {CONTAINER_ORDER.map((key) => (
+              <button
+                key={key}
+                type="button"
+                className="fmt-chip"
+                aria-pressed={target === key}
+                onClick={() => setTarget(key)}
+              >
+                {CONTAINERS[key].label}
+              </button>
+            ))}
+          </div>
         </div>
-      </div>
+      )}
 
       <div className="qe-row">
-        <span className="qe-label">画质档位</span>
+        <span className="qe-label">{item.audio ? '音质档位' : '画质档位'}</span>
         <div className="segmented" role="group" aria-label="画质档位">
           {TIERS.map((tier) => (
             <button
@@ -287,7 +297,7 @@ function QueueRow({
     }
     // 等待中
     const parts = [`等待中${rank > 0 ? ` · 第 ${rank} 位` : ''}`, `源文件 ${fmtSize(item.sourceSizeBytes)}`];
-    parts.push(`档位 ${TIER_NAME[item.preset]}`);
+    parts.push(`${item.audio ? '音质' : '画质'}档位 ${TIER_NAME[item.preset]}`);
     return parts.join(' · ');
   };
 
@@ -296,13 +306,18 @@ function QueueRow({
       <div
         className={`queue-row${failed ? ' is-failed' : ''}${waiting ? ' is-pending' : ''}`}
       >
-        <div className="q-ico">{CONTAINERS[item.target].label}</div>
+        <div className="q-ico">
+          {item.audio ? AUDIO_FORMATS[item.audio].label : CONTAINERS[item.target].label}
+        </div>
 
         <div className="q-body">
           <div className="q-name" title={item.outputPath}>
             <span className="q-fname">{item.fileName}</span>
             <span className="arrow">→</span>
-            <span>{CONTAINERS[item.target].label}</span>
+            <span>
+              {item.audio ? AUDIO_FORMATS[item.audio].label : CONTAINERS[item.target].label}
+            </span>
+            {item.audio ? <span className="chip chip-audio">仅音频</span> : null}
             {item.custom ? (
               <span className="chip chip-custom">自定义</span>
             ) : (

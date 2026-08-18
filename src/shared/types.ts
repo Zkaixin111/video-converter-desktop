@@ -4,6 +4,10 @@
  * ⚠️ 纪律：本目录下的文件**不得** import `node:*` 或 `electron`。
  * 它会被打进渲染进程，任何 Node 依赖都会在浏览器环境报错。
  */
+import type { AudioFormat } from './audio';
+
+/** 音频格式定义在 audio.ts（它有自己的格式表），这里转发一次方便调用方统一从 types 取 */
+export type { AudioFormat };
 
 /** 8 个目标容器 */
 export type ContainerKey = 'mp4' | 'mkv' | 'avi' | 'mov' | 'flv' | 'wmv' | 'webm' | 'mpeg';
@@ -109,6 +113,29 @@ export interface PlanResult {
   quality: QualitySpec;
 }
 
+/**
+ * 音频提取的规划结果（TODO-20）。
+ *
+ * 与 `PlanResult` 平行而不是塞进它：音频输出没有视频流，
+ * 若共用 `videoAction` / `quality.encoder` 这些字段，
+ * 每个读它的地方都要先判断「这次到底有没有画面」。
+ */
+export interface AudioPlanResult {
+  format: AudioFormat;
+  /** 源音频编码正好是目标格式 → copy（音质 100% 保留）；否则必须重编码 */
+  audioAction: 'copy' | 'encode';
+  /** 实际使用的音频编码器；copy 时为 'copy' */
+  encoder: string;
+  /** 目标码率；copy 时为源音频的码率（可能为 null，界面按「不变」显示） */
+  bitrate: string | null;
+  args: string[];
+  warnings: PlanWarning[];
+  estimate: { kind: 'instant' | 'encoded'; approxSeconds: number; qualityNote: string };
+  /** 预估输出体积：音频按「时长 × 码率」算，比视频那套准得多 */
+  estimateBytes: number;
+  preset: PresetTier;
+}
+
 export type JobStatus =
   | 'idle'
   /** 已入队，等待前面的任务 */
@@ -165,6 +192,8 @@ export interface JobSnapshot {
   sourcePath?: string;
   target?: ContainerKey;
   preset?: PresetTier;
+  /** 非空 = 这次是音频提取（TODO-20）；history 靠它区分「转成 MP4」与「抽成 MP3」 */
+  audio?: AudioFormat | null;
   /** 失败/取消时也要能记下源文件多大 */
   sourceSizeBytes?: number;
   progress?: ProgressPayload;
@@ -205,6 +234,8 @@ export interface QueueItem {
   custom: TaskParams | null;
   status: JobStatus;
   mode: ConversionMode | null;
+  /** 非空 = 这条是音频提取任务（TODO-20），此时 `target` 只是展示用，不参与编码 */
+  audio: AudioFormat | null;
   sourceSizeBytes: number;
   progress?: ProgressPayload;
   result?: JobResult;
@@ -240,6 +271,8 @@ export interface EnqueueItemInput {
   /** 全局面板当前选中的格式；custom 为 null 时生效 */
   globalTarget?: ContainerKey;
   custom: TaskParams | null;
+  /** 非空 = 这条走音频提取（TODO-20），与 target 互斥 */
+  audio?: AudioFormat | null;
 }
 
 /** 历史条目的结局（TODO-07）：旧数据没有这个字段，一律视为 `done` */
@@ -269,6 +302,8 @@ export interface HistoryEntry {
   /** epoch ms，列表按它倒序 */
   finishedAt: number;
   status: HistoryStatus;
+  /** 非空 = 这次是音频提取（TODO-20） */
+  audio?: AudioFormat | null;
   /** 失败/取消时的原因（成功时为 undefined） */
   error?: { code: string; message: string };
 }

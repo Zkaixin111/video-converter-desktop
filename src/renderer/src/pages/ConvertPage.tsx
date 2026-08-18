@@ -12,12 +12,17 @@
 import { useMemo, useState, type ReactElement } from 'react';
 import { MAX_BATCH_TOTAL } from '../../../shared/batch';
 import { CONTAINERS } from '../../../shared/containers';
+import { AUDIO_FORMATS } from '../../../shared/audio';
 import { formatBytes } from '../../../shared/estimate';
+import type { OutputKind } from '../store/useAppStore';
+import type { ConversionMode } from '../../../shared/types';
 import { batchDiskUsage, useAppStore } from '../store/useAppStore';
 import { DropZone } from '../components/convert/DropZone';
 import { MediaCard } from '../components/convert/MediaCard';
 import { TargetPicker } from '../components/convert/TargetPicker';
+import { AudioPicker } from '../components/convert/AudioPicker';
 import { PlanSummary } from '../components/convert/PlanSummary';
+import { AudioPlanSummary } from '../components/convert/AudioPlanSummary';
 import { BatchList, BatchSummary } from '../components/convert/BatchList';
 import { ProgressPanel } from '../components/convert/ProgressPanel';
 import { ResultCard } from '../components/convert/ResultCard';
@@ -76,6 +81,43 @@ function GuideCard(): ReactElement {
   );
 }
 
+/**
+ * 输出类型开关（TODO-20）。
+ *
+ * 放在目标格式选择器**上方**：先决定「要视频还是只要声音」，再选具体格式，
+ * 反过来的话用户会先在 8 个视频格式里点一个、再发现选错了路线。
+ */
+const OUTPUT_KINDS: { key: OutputKind; label: string }[] = [
+  { key: 'video', label: '视频转换' },
+  { key: 'audio', label: '仅提取音频' },
+];
+
+function OutputKindToggle({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: OutputKind;
+  disabled?: boolean;
+  onChange: (kind: OutputKind) => void;
+}): ReactElement {
+  return (
+    <div className="segmented" role="group" aria-label="输出类型">
+      {OUTPUT_KINDS.map((kind) => (
+        <button
+          key={kind.key}
+          type="button"
+          aria-pressed={value === kind.key}
+          disabled={disabled}
+          onClick={() => onChange(kind.key)}
+        >
+          {kind.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 export function ConvertPage(): ReactElement {
   const stage = useAppStore((s) => s.stage);
   const meta = useAppStore((s) => s.meta);
@@ -83,6 +125,9 @@ export function ConvertPage(): ReactElement {
   const thumb = useAppStore((s) => s.thumb);
   const target = useAppStore((s) => s.target);
   const plan = useAppStore((s) => s.plan);
+  const audioPlan = useAppStore((s) => s.audioPlan);
+  const outputKind = useAppStore((s) => s.outputKind);
+  const audioFormat = useAppStore((s) => s.audioFormat);
   const outputPath = useAppStore((s) => s.outputPath);
   const progress = useAppStore((s) => s.progress);
   const result = useAppStore((s) => s.result);
@@ -95,6 +140,8 @@ export function ConvertPage(): ReactElement {
   const pickIntoBatch = useAppStore((s) => s.pickIntoBatch);
   const removeBatchItem = useAppStore((s) => s.removeBatchItem);
   const setTarget = useAppStore((s) => s.setTarget);
+  const setOutputKind = useAppStore((s) => s.setOutputKind);
+  const setAudioFormat = useAppStore((s) => s.setAudioFormat);
   const chooseOutputDir = useAppStore((s) => s.chooseOutputDir);
   const start = useAppStore((s) => s.start);
   const cancel = useAppStore((s) => s.cancel);
@@ -116,6 +163,22 @@ export function ConvertPage(): ReactElement {
   const count = batch.length;
   const full = count >= MAX_BATCH_TOTAL;
   const multi = count > 1;
+  /** 音频提取（TODO-20）：目标格式、判定条、按钮文案走另一套 */
+  const audio = outputKind === 'audio';
+  const goal = audio ? AUDIO_FORMATS[audioFormat].label : CONTAINERS[target].label;
+  /** 主文件有没有音轨：没有的话判定条要换成明确原因，而不是显示「重新压缩」 */
+  const noAudio = audio && meta ? !meta.audio : false;
+  /**
+   * 音频提取时算不出判定的条目（没有音轨）：放行「开始」只会得到一个必然失败的任务，
+   * 所以这里直接拦住 —— 用户要么换个文件，要么把输出类型切回「视频转换」。
+   */
+  const unplannable = audio && batch.some((e) => !e.audioPlan);
+  /** 进度卡的模式：音频直接抽轨 = copy（不定长条），重编码 = transcode */
+  const runMode: ConversionMode = audio
+    ? audioPlan?.audioAction === 'copy'
+      ? 'copy'
+      : 'transcode'
+    : (plan?.mode ?? 'transcode');
 
   /**
    * 磁盘预检（TODO-03）。
@@ -149,6 +212,8 @@ export function ConvertPage(): ReactElement {
             <BatchList
               entries={batch}
               target={target}
+              kind={outputKind}
+              audioFormat={audioFormat}
               busy={busy}
               onRemove={(p) => void removeBatchItem(p)}
             />
@@ -179,15 +244,41 @@ export function ConvertPage(): ReactElement {
                 <span className={`batch-add-hint${full ? ' is-full' : ''}`}>
                   {full
                     ? `已达上限 ${MAX_BATCH_TOTAL} 个，不能再添加`
-                    : `已选 ${count}/${MAX_BATCH_TOTAL} 个${multi ? `，全部转为 ${CONTAINERS[target].label}` : ''}`}
+                    : `已选 ${count}/${MAX_BATCH_TOTAL} 个${multi ? `，${audio ? '全部提取为' : '全部转为'} ${goal}` : ''}`}
                 </span>
               </div>
 
-              <div className="section-label">输出格式</div>
-              <TargetPicker value={target} disabled={busy} onChange={(t) => void setTarget(t)} />
+              <div className="section-label">输出类型</div>
+              <OutputKindToggle
+                value={outputKind}
+                disabled={busy}
+                onChange={(k) => void setOutputKind(k)}
+              />
 
-              <div className="section-label">转换方式</div>
-              {multi ? <BatchSummary entries={batch} target={target} /> : <PlanSummary plan={plan} />}
+              <div className="section-label">{audio ? '音频格式' : '输出格式'}</div>
+              {audio ? (
+                <AudioPicker
+                  value={audioFormat}
+                  disabled={busy}
+                  onChange={(f) => void setAudioFormat(f)}
+                />
+              ) : (
+                <TargetPicker value={target} disabled={busy} onChange={(t) => void setTarget(t)} />
+              )}
+
+              <div className="section-label">{audio ? '提取方式' : '转换方式'}</div>
+              {multi ? (
+                <BatchSummary
+                  entries={batch}
+                  target={target}
+                  kind={outputKind}
+                  audioFormat={audioFormat}
+                />
+              ) : audio ? (
+                <AudioPlanSummary plan={audioPlan} noAudio={noAudio} />
+              ) : (
+                <PlanSummary plan={plan} />
+              )}
 
               <div className="output-row">
                 <span className="lbl">输出位置</span>
@@ -213,10 +304,18 @@ export function ConvertPage(): ReactElement {
                 <Button
                   variant="primary"
                   size="lg"
-                  disabled={busy || !disk.enough}
+                  disabled={busy || !disk.enough || unplannable}
                   onClick={() => void start()}
                 >
-                  {busy ? '正在准备…' : multi ? `开始转换 ${count} 个视频` : '开始转换'}
+                  {busy
+                    ? '正在准备…'
+                    : audio
+                      ? multi
+                        ? `开始提取 ${count} 个音频`
+                        : '开始提取音频'
+                      : multi
+                        ? `开始转换 ${count} 个视频`
+                        : '开始转换'}
                 </Button>
               </div>
             </div>
@@ -224,7 +323,7 @@ export function ConvertPage(): ReactElement {
 
           {stage === 'running' ? (
             <ProgressPanel
-              mode={plan?.mode ?? 'transcode'}
+              mode={runMode}
               fileName={meta.fileName}
               outputPath={outputPath}
               progress={progress}

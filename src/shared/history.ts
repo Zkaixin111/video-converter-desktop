@@ -32,6 +32,7 @@ export function toHistoryEntry(s: JobSnapshot, finishedAt: number): HistoryEntry
     target: s.target ?? 'mp4',
     mode: s.result?.mode ?? 'transcode',
     preset: s.preset ?? 'standard',
+    audio: s.audio ?? null,
     sourceSizeBytes: s.result?.sourceSizeBytes ?? s.sourceSizeBytes ?? 0,
     outputSizeBytes: s.result?.outputSizeBytes ?? 0,
     elapsedMs: s.result?.elapsedMs ?? 0,

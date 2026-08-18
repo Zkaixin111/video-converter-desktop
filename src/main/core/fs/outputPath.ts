@@ -13,10 +13,12 @@
  */
 import fs from 'node:fs';
 import path from 'node:path';
+import { AUDIO_FORMATS, isAudioFormat } from '../../../shared/audio';
 import { CONTAINERS, isContainerKey } from '../../../shared/containers';
 import { AppError } from '../../../shared/errors';
 import { DEFAULT_TEMPLATE, buildTokens, renderOutputName } from '../../../shared/outputName';
 import type {
+  AudioFormat,
   ConflictPolicy,
   ContainerKey,
   NamingTokens,
@@ -66,6 +68,37 @@ export function resolveOutputPath(
   if (!isContainerKey(target)) {
     throw new AppError('E_UNSUPPORTED_TARGET', `不支持的目标格式：${String(target)}`);
   }
+  return buildOutputPath(sourcePath, CONTAINERS[target].ext, CONTAINERS[target].label, options);
+}
+
+/**
+ * 音频提取的输出路径（TODO-20）。
+ *
+ * 与视频同一套规则（模板 / 重名策略 / 防覆盖源文件），只是扩展名与
+ * `{format}` 的取值换成音频格式 —— 用户在设置里配的命名模板应当同样生效。
+ */
+export function resolveAudioPath(
+  sourcePath: string,
+  format: AudioFormat,
+  options: ResolveOptions = {},
+): string {
+  if (!isAudioFormat(format)) {
+    throw new AppError('E_UNSUPPORTED_TARGET', `不支持的音频格式：${String(format)}`);
+  }
+  return buildOutputPath(
+    sourcePath,
+    AUDIO_FORMATS[format].ext,
+    AUDIO_FORMATS[format].label,
+    options,
+  );
+}
+
+function buildOutputPath(
+  sourcePath: string,
+  ext: string,
+  targetLabel: string,
+  options: ResolveOptions,
+): string {
   const {
     outputDir,
     exists = fs.existsSync,
@@ -80,13 +113,12 @@ export function resolveOutputPath(
   } = options;
 
   const dir = outputDir && outputDir.trim() ? path.resolve(outputDir) : path.dirname(sourcePath);
-  const ext = CONTAINERS[target].ext;
 
   // 模板 → 文件名。渲染结果为空（模板全是非法字符）时回落到默认模板，
   // 否则会写出一个「没有名字点mp4」的文件。
   const built = buildTokens({
     sourcePath,
-    targetLabel: CONTAINERS[target].label,
+    targetLabel,
     preset,
     index,
     total,

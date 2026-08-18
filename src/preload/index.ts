@@ -10,6 +10,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { CH, EV } from '../shared/channels';
 import type {
+  AudioFormat,
+  AudioPlanResult,
   Capabilities,
   ContainerKey,
   DiskEstimate,
@@ -57,13 +59,24 @@ const api = {
     preset?: PresetTier,
   ): Promise<IpcResult<PlanResult>> => ipcRenderer.invoke(CH.plan, { meta, target, preset }),
 
+  /**
+   * 规划 + 输出路径。
+   * `audio` 非空时返回 `audioPlan`（音频提取，TODO-20），否则返回 `plan`；两者互斥。
+   */
   preview: (
     meta: MediaMeta,
     target: ContainerKey,
     outputDir?: string | null,
     preset?: PresetTier,
-  ): Promise<IpcResult<{ plan: PlanResult; outputPath: string; disk: DiskEstimate }>> =>
-    ipcRenderer.invoke(CH.preview, { meta, target, outputDir, preset }),
+    audio?: AudioFormat | null,
+  ): Promise<
+    IpcResult<{
+      plan: PlanResult | null;
+      audioPlan: AudioPlanResult | null;
+      outputPath: string;
+      disk: DiskEstimate;
+    }>
+  > => ipcRenderer.invoke(CH.preview, { meta, target, outputDir, preset, audio }),
 
   start: (
     meta: MediaMeta,

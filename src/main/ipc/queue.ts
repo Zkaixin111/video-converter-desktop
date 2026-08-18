@@ -8,6 +8,7 @@
  */
 import { BrowserWindow, ipcMain } from 'electron';
 import { CH, EV } from '../../shared/channels';
+import { audioBitrateFor, estimateAudioBytes, isAudioFormat } from '../../shared/audio';
 import { CONTAINER_ORDER, isContainerKey, isPresetTier } from '../../shared/containers';
 import path from 'node:path';
 import { AppError } from '../../shared/errors';
@@ -61,11 +62,20 @@ function parseCustom(v: unknown): TaskParams | null {
   }
 }
 
-function requireMeta(v: unknown): MediaMeta {
+/** 音频提取（TODO-20）允许源文件没有画面，但必须有音轨 */
+function requireMeta(v: unknown, audioOnly = false): MediaMeta {
   const meta = requireObject(v, 'meta') as unknown as MediaMeta;
   requireAbsPath(meta.path, 'meta.path');
+  if (audioOnly) {
+    if (!meta.audio) {
+      throw new AppError('E_NO_AUDIO_STREAM', '这个文件里没有音轨，没法提取音频。');
+    }
+    return meta;
+  }
   if (!meta.video) {
-    throw new AppError('E_NO_VIDEO_STREAM', '这个文件里没有视频画面，不能转换成视频格式。');
+    throw new AppError('E_NO_VIDEO_STREAM', '这个文件里没有视频画面，不能转换成视频格式。', {
+      hint: '只想提取声音的话，把输出类型切成「仅音频」。',
+    });
   }
   return meta;
 }
@@ -155,28 +165,34 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
 
       const inputs = list.map((raw) => {
         const item = requireObject(raw, 'items[]') as unknown as EnqueueItemInput;
-        const meta = requireMeta(item.meta);
+        // 音频提取不要求源文件有画面，但必须有音轨
+        const audio = isAudioFormat(item.audio) ? item.audio : null;
+        const meta = requireMeta(item.meta, audio !== null);
         const resolved = resolve(item.custom, item.globalTarget);
         return {
           meta,
           target: resolved.target,
           preset: resolved.preset,
           custom: resolved.custom,
+          audio,
           outputDir: typeof outputDir === 'string' && outputDir ? outputDir : null,
         };
       });
 
       // 磁盘预检（TODO-03）：批量转换时空间不够是「整批全废」，比单文件失败代价高得多。
       // 这里按最坏情况（全部重编码）估算，宁可多拦一次。
+      // 音频按「时长 × 最高档码率」算，同样取最坏情况。
       const required = inputs.reduce(
         (sum, i) =>
           sum +
-          estimateOutputBytes({
-            sourceSizeBytes: i.meta.sizeBytes,
-            mode: 'transcode',
-            target: i.target,
-            preset: i.preset,
-          }),
+          (i.audio
+            ? estimateAudioBytes(i.meta.durationSec, audioBitrateFor(i.audio, 'high'))
+            : estimateOutputBytes({
+                sourceSizeBytes: i.meta.sizeBytes,
+                mode: 'transcode',
+                target: i.target,
+                preset: i.preset,
+              })),
         0,
       );
       const space = checkSpace(

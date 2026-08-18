@@ -5,7 +5,9 @@ import { AppError } from '../../shared/errors';
 import { estimateOutputBytes } from '../../shared/estimate';
 import path from 'node:path';
 import { CONTAINER_ORDER, isContainerKey, isPresetTier } from '../../shared/containers';
+import { isAudioFormat } from '../../shared/audio';
 import type {
+  AudioPlanResult,
   ContainerKey,
   JobSnapshot,
   DiskEstimate,
@@ -14,9 +16,9 @@ import type {
   PresetTier,
   QualityOverrides,
 } from '../../shared/types';
-import { planConversion } from '../core/ffmpeg/planner';
+import { planAudioExtraction, planConversion } from '../core/ffmpeg/planner';
 import { checkSpace } from '../core/fs/disk';
-import { resolveOutputPath } from '../core/fs/outputPath';
+import { resolveAudioPath, resolveOutputPath } from '../core/fs/outputPath';
 import { jobManager } from '../core/job/JobManager';
 import { logger } from '../logger';
 import { getSettings } from '../store';
@@ -51,11 +53,29 @@ function overridesFor(target: ContainerKey): QualityOverrides | null {
   return q && q.enabled ? q : null;
 }
 
-function requireMeta(v: unknown): MediaMeta {
+/**
+ * 校验媒体信息，返回「缺不缺要用的那条流」。
+ *
+ * 音频提取（TODO-20）与视频转换的**必填项正好相反**：
+ * 视频要画面、音频要声音。所以这里按模式分流，而不是统一要求「两者都有」——
+ * 否则纯音频文件（比如 .m4a 源）连提取音频都做不了。
+ */
+function checkMeta(v: unknown, audioOnly = false): { meta: MediaMeta; ready: boolean } {
   const meta = requireObject(v, 'meta') as unknown as MediaMeta;
   requireAbsPath(meta.path, 'meta.path');
-  if (!meta.video) {
-    throw new AppError('E_NO_VIDEO_STREAM', '这个文件里没有视频画面，不能转换成视频格式。');
+  return { meta, ready: audioOnly ? Boolean(meta.audio) : Boolean(meta.video) };
+}
+
+/** 严格版：缺流直接报错，用于真正要开始执行的入口 */
+function requireMeta(v: unknown, audioOnly = false): MediaMeta {
+  const { meta, ready } = checkMeta(v, audioOnly);
+  if (!ready) {
+    if (audioOnly) {
+      throw new AppError('E_NO_AUDIO_STREAM', '这个文件里没有音轨，没法提取音频。');
+    }
+    throw new AppError('E_NO_VIDEO_STREAM', '这个文件里没有视频画面，不能转换成视频格式。', {
+      hint: '只想提取声音的话，把输出类型切成「仅音频」。',
+    });
   }
   return meta;
 }
@@ -75,26 +95,52 @@ export function registerConvertIpc(): void {
     }),
   );
 
-  /** 规划 + 输出路径：UI 上「判定条 + 输出位置行」一次拿全 */
+  /**
+   * 规划 + 输出路径：UI 上「判定条 + 输出位置行」一次拿全。
+   *
+   * `audio` 非空时走音频提取（TODO-20）：返回 `audioPlan` 而不是 `plan`，
+   * 两者互斥 —— 同一个任务不可能既输出视频又只输出声音。
+   */
   ipcMain.handle(CH.preview, (_e, payload: unknown) =>
-    wrap<{ plan: PlanResult; outputPath: string; disk: DiskEstimate }>(() => {
-      const { meta, target, outputDir, preset } = requireObject(payload, 'payload');
-      const m = requireMeta(meta);
+    wrap<{
+      plan: PlanResult | null;
+      audioPlan: AudioPlanResult | null;
+      outputPath: string;
+      disk: DiskEstimate;
+    }>(() => {
+      const { meta, target, outputDir, preset, audio } = requireObject(payload, 'payload');
+      const wantAudio = isAudioFormat(audio);
+      // 音频预览阶段「缺流」不算失败：没有音轨的文件照样要能进批次，
+      // 判定条会说明原因，用户把输出类型切回「视频转换」就能接着用同一个文件。
+      // 若在这里抛错，文件根本进不了批次，用户连改回来的机会都没有。
+      // 视频路径维持原样（缺画面直接报错），行为与 TODO-20 之前逐字一致。
+      const m = wantAudio ? checkMeta(meta, true).meta : requireMeta(meta);
+      const ready = wantAudio ? Boolean(m.audio) : true;
+      const outDir = typeof outputDir === 'string' && outputDir ? outputDir : null;
+      const naming = getSettings().naming;
+      // 预览永远用 rename：这里只是「会写到哪」，
+      // 真正执行时才按 skip 策略决定要不要跳过。
+      const pathOptions = { outputDir: outDir, template: naming.template, conflict: 'rename' } as const;
+
+      if (wantAudio) {
+        const p = resolvePreset(preset, 'mp4');
+        const audioPlan = ready ? planAudioExtraction({ meta: m, format: audio, preset: p }) : null;
+        const outputPath = resolveAudioPath(m.path, audio, { ...pathOptions, preset: p });
+        return {
+          plan: null,
+          audioPlan,
+          outputPath,
+          disk: checkSpace(outDir ?? path.dirname(m.path), audioPlan?.estimateBytes ?? 0),
+        };
+      }
+
       const t = requireTarget(target);
       const plan = planConversion({
         meta: m,
         target: t,
         options: { preset: resolvePreset(preset, t), overrides: overridesFor(t) },
       });
-      const naming = getSettings().naming;
-      // 预览永远用 rename：这里只是「会写到哪」，
-      // 真正执行时才按 skip 策略决定要不要跳过。
-      const outDir = typeof outputDir === 'string' && outputDir ? outputDir : null;
-      const outputPath = resolveOutputPath(m.path, t, {
-        outputDir: outDir,
-        template: naming.template,
-        conflict: 'rename',
-      });
+      const outputPath = resolveOutputPath(m.path, t, { ...pathOptions, preset: plan.preset });
       const disk = checkSpace(
         outDir ?? path.dirname(m.path),
         estimateOutputBytes({
@@ -104,7 +150,7 @@ export function registerConvertIpc(): void {
           preset: plan.preset,
         }),
       );
-      return { plan, outputPath, disk };
+      return { plan, audioPlan: null, outputPath, disk };
     }),
   );
 
@@ -124,7 +170,8 @@ export function registerConvertIpc(): void {
       const [first] = jobManager.enqueue([
         { meta: m, target: t, preset: p, custom: null, outputDir: typeof outputDir === 'string' && outputDir ? outputDir : null },
       ]);
-      if (!first) throw new AppError('E_UNKNOWN', '入队失败，请重试。');
+      // 这个入口只做视频（音频提取走 queue:enqueue），拿不到 plan 就是入队失败
+      if (!first || !first.plan) throw new AppError('E_UNKNOWN', '入队失败，请重试。');
 
       logger.info('job enqueue', m.fileName, '→', t, 'mode', first.plan.mode);
       return { jobId: first.item.jobId, plan: first.plan, outputPath: first.item.outputPath };

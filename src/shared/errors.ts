@@ -14,6 +14,7 @@ export type ErrorCode =
   | 'E_CORRUPT_FILE'
   | 'E_INVALID_INPUT'
   | 'E_NO_VIDEO_STREAM'
+  | 'E_NO_AUDIO_STREAM'
   | 'E_UNSUPPORTED_TARGET'
   | 'E_ENCODER_MISSING'
   | 'E_ENCODER_INIT'
@@ -50,6 +51,7 @@ export const ERROR_TEXT: Record<ErrorCode, string> = {
   E_CORRUPT_FILE: '这个文件没有正常结束，通常是下载或拷贝过程中断了。',
   E_INVALID_INPUT: '文件已损坏，或者后缀和真实格式不一致。',
   E_NO_VIDEO_STREAM: '这个文件里没有视频画面，不能转换成视频格式。',
+  E_NO_AUDIO_STREAM: '这个文件里没有音轨，没法提取音频。',
   E_UNSUPPORTED_TARGET: '不支持这个输出格式。',
   E_ENCODER_MISSING: '当前版本不支持这个编码器。',
   E_ENCODER_INIT: '编码器初始化失败，通常是参数与源文件不兼容。',

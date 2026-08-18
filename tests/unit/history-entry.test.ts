@@ -101,3 +101,29 @@ describe('toHistoryEntry · 失败与取消', () => {
     expect(got?.sourceSizeBytes).toBe(4096);
   });
 });
+
+/**
+ * 音频提取的历史（TODO-20）。
+ *
+ * 关键在**重跑**：音频记录的 `target` 是入队时的全局容器（比如 mp4），
+ * 真正决定输出的是 `audio`。重跑若只看 target，就会「本来抽的是 MP3，重跑却转出 MP4」。
+ */
+describe('toHistoryEntry · 音频提取', () => {
+  it('快照带 audio 时一并存下', () => {
+    const got = toHistoryEntry({ ...base, audio: 'mp3' }, 1);
+    expect(got?.audio).toBe('mp3');
+  });
+
+  it('视频任务的 audio 一律为 null（界面据此区分两条路线）', () => {
+    expect(toHistoryEntry(base, 1)?.audio).toBeNull();
+    expect(toHistoryEntry({ ...base, audio: null }, 1)?.audio).toBeNull();
+  });
+
+  it('音频提取失败也带上 audio——失败记录同样要能按原路重跑', () => {
+    const got = toHistoryEntry(
+      { ...base, status: 'error', result: undefined, audio: 'm4a' },
+      1,
+    );
+    expect(got).toMatchObject({ status: 'failed', audio: 'm4a' });
+  });
+});

@@ -10,9 +10,13 @@
 import { create } from 'zustand';
 import { limitAdd, limitMessage } from '../../../shared/batch';
 import { CONTAINERS } from '../../../shared/containers';
+import { AUDIO_FORMATS } from '../../../shared/audio';
 import type {
+  AudioFormat,
+  AudioPlanResult,
   Capabilities,
   ContainerKey,
+  ConversionMode,
   HistoryItem,
   HistoryStatus,
   JobError,
@@ -50,11 +54,21 @@ export interface ToastItem {
 export interface BatchEntry {
   meta: MediaMeta;
   plan: PlanResult | null;
+  /** 音频提取的规划结果（TODO-20）；视频任务为 null，与 `plan` 互斥 */
+  audioPlan: AudioPlanResult | null;
   outputPath: string;
   /** 磁盘预检：这条预计要写多少 / 目标位置还剩多少（TODO-03） */
   requiredBytes: number;
   freeBytes: number | null;
 }
+
+/**
+ * 输出类型（TODO-20）。
+ *
+ * 视频转换与音频提取是**两条平行路线**：音频输出没有画面，
+ * 所以目标格式、判定条、体积估算全都不同。用一个开关切，而不是往视频那套里塞分支。
+ */
+export type OutputKind = 'video' | 'audio';
 
 interface AppState {
   /* ── 导航 ─────────────────────────────── */
@@ -74,6 +88,12 @@ interface AppState {
   thumb: string | null;
   target: ContainerKey;
   plan: PlanResult | null;
+  /** 音频提取规划（TODO-20）；`outputKind === 'audio'` 时有值 */
+  audioPlan: AudioPlanResult | null;
+  /** 输出类型：视频转换 / 仅提取音频（TODO-20） */
+  outputKind: OutputKind;
+  /** 音频提取的目标格式 */
+  audioFormat: AudioFormat;
   /** 当前输出文件的完整路径（主进程算好的，UI 只展示） */
   outputPath: string;
   /** 用户手动改过输出目录；null 表示「源文件同级」 */
@@ -110,6 +130,10 @@ interface AppState {
   /** 队列页直通入队（不经过转换页的批次组装） */
   enqueuePaths: (paths: string[]) => Promise<void>;
   setTarget: (target: ContainerKey) => Promise<void>;
+  /** 切换输出类型（视频 / 仅音频）：会连带整批重算判定与输出路径 */
+  setOutputKind: (kind: OutputKind) => Promise<void>;
+  /** 切换音频提取的目标格式（TODO-20） */
+  setAudioFormat: (format: AudioFormat) => Promise<void>;
   chooseOutputDir: () => Promise<void>;
   start: () => Promise<void>;
   cancel: () => Promise<void>;
@@ -192,20 +216,45 @@ function fileNameOf(filePath: string): string {
  *
  * 每个条目都要有自己的 plan：批量里第 3 个文件可能是直通、第 7 个需要重压缩，
  * 列表上要能逐条标出来，不能整批只显示主文件的判定。
+ *
+ * `audio` 非空时改走音频提取规划（TODO-20）。
  */
 async function probeOne(
   path: string,
   target: ContainerKey,
   outputDir: string | null,
   settings: Settings | null,
+  audio: AudioFormat | null,
 ): Promise<BatchEntry> {
   const meta = await call(window.api.probe(path));
-  const { plan, outputPath, disk } = await call(
-    window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+  const { plan, audioPlan, outputPath, disk } = await call(
+    window.api.preview(meta, target, outputDir, presetFor(settings, target), audio),
   );
   return {
     meta,
     plan,
+    audioPlan,
+    outputPath,
+    requiredBytes: disk.requiredBytes,
+    freeBytes: disk.freeBytes,
+  };
+}
+
+/** 已在批次里的条目换了格式/目录/输出类型后，用新参数重算（探测结果复用） */
+async function rePreview(
+  entry: BatchEntry,
+  target: ContainerKey,
+  outputDir: string | null,
+  settings: Settings | null,
+  audio: AudioFormat | null,
+): Promise<BatchEntry> {
+  const { plan, audioPlan, outputPath, disk } = await call(
+    window.api.preview(entry.meta, target, outputDir, presetFor(settings, target), audio),
+  );
+  return {
+    ...entry,
+    plan,
+    audioPlan,
     outputPath,
     requiredBytes: disk.requiredBytes,
     freeBytes: disk.freeBytes,
@@ -224,6 +273,22 @@ export function batchDiskUsage(
   const free = batch.find((e) => e.freeBytes !== null)?.freeBytes ?? null;
   const short = free === null ? 0 : Math.max(0, required - free);
   return { required, free, short, enough: short === 0 };
+}
+
+/**
+ * 条目的转换模式（TODO-20）。
+ *
+ * 音频提取没有 `plan`，但它同样要参与「直通 / 重压缩」的汇总口径：
+ * 直接抽轨 = copy（很快、音质不变），换个编码 = transcode。
+ */
+export function entryMode(entry: BatchEntry): ConversionMode | null {
+  if (entry.audioPlan) return entry.audioPlan.audioAction === 'copy' ? 'copy' : 'transcode';
+  return entry.plan?.mode ?? null;
+}
+
+/** 条目的预计耗时（秒） */
+export function entrySeconds(entry: BatchEntry): number {
+  return entry.audioPlan?.estimate.approxSeconds ?? entry.plan?.estimate.approxSeconds ?? 0;
 }
 
 /** 缩略图是「锦上添花」：失败不影响任何流程，所以不 await、不抛错 */
@@ -249,6 +314,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   thumb: null,
   target: 'mp4',
   plan: null,
+  audioPlan: null,
+  outputKind: 'video',
+  audioFormat: 'mp3',
   outputPath: '',
   outputDir: null,
   progress: null,
@@ -436,11 +504,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ busy: true, ...(wasEmpty ? { stage: 'probing' as Stage } : {}) });
 
     try {
-      const { target, outputDir, settings } = get();
+      const { target, outputDir, settings, outputKind, audioFormat } = get();
+      const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
       const added: BatchEntry[] = [];
       for (const path of limit.accepted) {
         try {
-          added.push(await probeOne(path, target, outputDir, settings));
+          added.push(await probeOne(path, target, outputDir, settings, audio));
         } catch (err) {
           get().toast(`${fileNameOf(path)} 读取失败：${messageOf(err)}`, 'warning');
         }
@@ -459,6 +528,7 @@ export const useAppStore = create<AppState>((set, get) => ({
         batch: next,
         meta: primary.meta,
         plan: primary.plan,
+        audioPlan: primary.audioPlan,
         outputPath: primary.outputPath,
         stage: 'setup',
         busy: false,
@@ -499,6 +569,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       batch: next,
       meta: primary.meta,
       plan: primary.plan,
+      audioPlan: primary.audioPlan,
       outputPath: primary.outputPath,
       thumb: primaryChanged ? null : get().thumb,
     });
@@ -530,11 +601,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
 
     // 单任务独立参数模式：新任务自带当前面板的格式与档位（之后可单独编辑）
-    const { settings, target, outputDir } = get();
+    const { settings, target, outputDir, outputKind, audioFormat } = get();
+    const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
     const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
-    const custom: TaskParams | null = perTask
-      ? { target, preset: presetFor(settings, target) }
-      : null;
+    const custom: TaskParams | null =
+      !audio && perTask ? { target, preset: presetFor(settings, target) } : null;
 
     set({ busy: true });
     try {
@@ -542,7 +613,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       for (const path of limit.accepted) {
         try {
           const meta = await call(window.api.probe(path));
-          inputs.push({ meta, globalTarget: target, custom });
+          inputs.push({ meta, globalTarget: target, custom, audio });
         } catch (err) {
           get().toast(`${fileNameOf(path)} 读取失败：${messageOf(err)}`, 'warning');
         }
@@ -578,31 +649,78 @@ export const useAppStore = create<AppState>((set, get) => ({
    * 只更新主文件会出现「列表里还写着 .mp4」的错位。
    */
   setTarget: async (target) => {
-    const { batch, target: current, outputDir, settings } = get();
+    const { batch, target: current, outputDir, settings, outputKind, audioFormat } = get();
     if (current === target) return;
     set({ target });
 
     if (batch.length === 0) return;
+    const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
     try {
-      const preset = presetFor(settings, target);
       const next = await Promise.all(
-        batch.map(async (entry) => {
-          const { plan, outputPath, disk } = await call(
-            window.api.preview(entry.meta, target, outputDir, preset),
-          );
-          return {
-            ...entry,
-            plan,
-            outputPath,
-            requiredBytes: disk.requiredBytes,
-            freeBytes: disk.freeBytes,
-          };
-        }),
+        batch.map((entry) => rePreview(entry, target, outputDir, settings, audio)),
       );
       // 期间用户可能又切了格式，只接受最后一次
       if (get().target !== target) return;
       const primary = next[0];
-      set({ batch: next, plan: primary.plan, outputPath: primary.outputPath });
+      set({
+        batch: next,
+        plan: primary.plan,
+        audioPlan: primary.audioPlan,
+        outputPath: primary.outputPath,
+      });
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  /**
+   * 切换输出类型（TODO-20）。
+   *
+   * 整批重算是必须的：视频「转成 MP4」与音频「抽成 MP3」的输出路径、
+   * 判定结论、体积估算全都不同，只改主文件会让列表里其余条目显示旧信息。
+   */
+  setOutputKind: async (kind) => {
+    const { outputKind, batch, target, outputDir, settings, audioFormat } = get();
+    if (outputKind === kind) return;
+    set({ outputKind: kind });
+
+    if (batch.length === 0) return;
+    const audio: AudioFormat | null = kind === 'audio' ? audioFormat : null;
+    try {
+      const next = await Promise.all(
+        batch.map((entry) => rePreview(entry, target, outputDir, settings, audio)),
+      );
+      if (get().outputKind !== kind) return;
+      const primary = next[0];
+      set({
+        batch: next,
+        plan: primary.plan,
+        audioPlan: primary.audioPlan,
+        outputPath: primary.outputPath,
+      });
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  setAudioFormat: async (format) => {
+    const { audioFormat, batch, target, outputDir, settings, outputKind } = get();
+    if (audioFormat === format) return;
+    set({ audioFormat: format });
+
+    if (batch.length === 0 || outputKind !== 'audio') return;
+    try {
+      const next = await Promise.all(
+        batch.map((entry) => rePreview(entry, target, outputDir, settings, format)),
+      );
+      if (get().audioFormat !== format) return;
+      const primary = next[0];
+      set({
+        batch: next,
+        plan: primary.plan,
+        audioPlan: primary.audioPlan,
+        outputPath: primary.outputPath,
+      });
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }
@@ -615,25 +733,19 @@ export const useAppStore = create<AppState>((set, get) => ({
 
       set({ outputDir: path });
       // 立刻用新目录重算输出路径，避免「输入框显示 A，实际写到 B」；批量要逐条重算
-      const { batch, target, settings } = get();
+      const { batch, target, settings, outputKind, audioFormat } = get();
       if (batch.length > 0) {
-        const preset = presetFor(settings, target);
+        const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
         const next = await Promise.all(
-          batch.map(async (entry) => {
-            const { plan, outputPath, disk } = await call(
-              window.api.preview(entry.meta, target, path, preset),
-            );
-            return {
-              ...entry,
-              plan,
-              outputPath,
-              requiredBytes: disk.requiredBytes,
-              freeBytes: disk.freeBytes,
-            };
-          }),
+          batch.map((entry) => rePreview(entry, target, path, settings, audio)),
         );
         const primary = next[0];
-        set({ batch: next, plan: primary.plan, outputPath: primary.outputPath });
+        set({
+          batch: next,
+          plan: primary.plan,
+          audioPlan: primary.audioPlan,
+          outputPath: primary.outputPath,
+        });
       }
       get().toast('已切换输出位置', 'success');
     } catch (err) {
@@ -651,20 +763,21 @@ export const useAppStore = create<AppState>((set, get) => ({
    *     而队列页本来就有逐条进度与失败处理，没有必要再实现第二套。
    */
   start: async () => {
-    const { batch, target, outputDir, stage, busy, settings } = get();
+    const { batch, target, outputDir, stage, busy, settings, outputKind, audioFormat } = get();
     if (batch.length === 0 || stage !== 'setup' || busy) return;
 
-    // 单任务独立参数模式：把当前面板的格式与档位固化到任务上（之后可在队列里单独改）
+    const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
+    // 单任务独立参数模式：把当前面板的格式与档位固化到任务上（之后可在队列里单独改）。
+    // 音频提取不固化 —— 它的「目标格式」是 mp3/m4a，跟视频那套容器选择器无关。
     const perTask = (settings?.queueMode ?? 'shared') === 'per-task';
-    const custom: TaskParams | null = perTask
-      ? { target, preset: presetFor(settings, target) }
-      : null;
+    const custom: TaskParams | null =
+      !audio && perTask ? { target, preset: presetFor(settings, target) } : null;
 
     set({ busy: true, progress: null, result: null, error: null });
     try {
       const items = await call(
         window.api.enqueue(
-          batch.map((entry) => ({ meta: entry.meta, globalTarget: target, custom })),
+          batch.map((entry) => ({ meta: entry.meta, globalTarget: target, custom, audio })),
           outputDir,
         ),
       );
@@ -727,6 +840,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       batch: [],
       thumb: null,
       plan: null,
+      audioPlan: null,
       outputPath: '',
       // 回到「设置里的默认保存位置」，而不是把用户改过的目录也一起忘掉
       outputDir: get().settings?.defaultSavePath ?? null,
@@ -756,12 +870,13 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 改的是画质档位：转换页的判定条与输出参数必须立刻跟着变，
       // 否则用户会看到「预设改了但预计耗时/参数没变」的假象。
       if (patch.presets) {
-        const { meta, target, stage, outputDir } = get();
+        const { meta, target, stage, outputDir, outputKind, audioFormat } = get();
         if (meta && stage === 'setup') {
-          const { plan, outputPath } = await call(
-            window.api.preview(meta, target, outputDir, presetFor(settings, target)),
+          const audio: AudioFormat | null = outputKind === 'audio' ? audioFormat : null;
+          const { plan, audioPlan, outputPath } = await call(
+            window.api.preview(meta, target, outputDir, presetFor(settings, target), audio),
           );
-          set({ plan, outputPath });
+          set({ plan, audioPlan, outputPath });
         }
       }
     } catch (err) {
@@ -875,14 +990,16 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   /** 「复制诊断信息」：拼装文本交给主进程写剪贴板（渲染层在 sandbox 下没有 clipboard 权限） */
   copyDiagnostics: async () => {
-    const { meta, target, error, caps, result } = get();
+    const { meta, target, error, caps, result, outputKind, audioFormat } = get();
+    const goal =
+      outputKind === 'audio' ? `仅音频 ${AUDIO_FORMATS[audioFormat].label}` : CONTAINERS[target].label;
     const lines = [
       `时间：${new Date().toLocaleString('zh-CN')}`,
       `文件：${meta?.fileName ?? '未知'}`,
       `路径：${meta?.path ?? '未知'}`,
       `大小：${meta ? `${(meta.sizeBytes / 1024 / 1024).toFixed(1)} MB` : '未知'}`,
       `时长：${meta ? `${meta.durationSec.toFixed(2)} 秒` : '未知'}`,
-      `目标格式：${CONTAINERS[target].label}`,
+      `目标格式：${goal}`,
       `阶段：${error ? '转换中断' : '完成'}`,
       `错误码：${error?.code ?? '—'}`,
       `输出：${result?.outputPath ?? '—'}`,

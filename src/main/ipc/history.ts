@@ -71,6 +71,9 @@ export function registerHistoryIpc(): void {
 
       // 重新探测：文件可能被换过内容（同名不同片），沿用旧 meta 会算出错的转码参数
       const meta = await probeMedia(entry.sourcePath);
+      // 音频提取记录重跑时仍走音频那条路：target 只是历史里的占位值，
+      // 若按它入队就会「本来要抽 MP3，重跑却转出一个 MP4」。
+      const audio = entry.audio ?? null;
       const [first] = jobManager.enqueue([
         {
           meta,
@@ -78,13 +81,14 @@ export function registerHistoryIpc(): void {
           preset: entry.preset,
           custom: { target: entry.target, preset: entry.preset },
           outputDir: null,
+          audio,
         },
       ]);
       if (!first) {
         throw new AppError('E_UNKNOWN', '重跑入队失败，请重试。');
       }
 
-      logger.info('history rerun', entry.id, entry.fileName, '→', entry.target);
+      logger.info('history rerun', entry.id, entry.fileName, '→', audio ?? entry.target);
       return [first.item];
     }),
   );
