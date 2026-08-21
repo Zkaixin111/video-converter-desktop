@@ -31,6 +31,7 @@ import { jobManager } from '../core/job/JobManager';
 import { historyStore } from '../history';
 import { logger } from '../logger';
 import { notifyFinished } from '../notify';
+import { queuePersistence } from '../queuePersistence';
 import { getSettings } from '../store';
 import { requireAbsPath, requireArray, requireObject, requireString, wrap } from './wrap';
 
@@ -97,6 +98,76 @@ function resolve(
   return resolveTaskParams({ custom, globalTarget, presets: settings.presets });
 }
 
+/**
+ * 快照落盘的最小间隔（TODO-12）。
+ *
+ * 转码中 `onQueue` 每秒会来好几次（进度变动也会推整帧快照）。
+ * 两条路都不能走：每次都写会让 SSD 一直被几百字节的 JSON 戳；
+ * 纯防抖（debounce）则会因为事件太密而**永远不触发**，等于没做持久化。
+ * 所以取「节流出尾随写」—— 第一个变动起 500ms 后落一次，期间的变动合并。
+ */
+const PERSIST_INTERVAL_MS = 500;
+
+let persistTimer: NodeJS.Timeout | null = null;
+
+/** 队列快照之外的消费方（TODO-14 的系统托盘要跟着队列刷新 tooltip 与菜单） */
+const queueListeners: ((snapshot: QueueSnapshot) => void)[] = [];
+
+export function onQueueChanged(fn: (snapshot: QueueSnapshot) => void): void {
+  queueListeners.push(fn);
+}
+
+function schedulePersist(): void {
+  if (persistTimer) return;
+  persistTimer = setTimeout(() => {
+    persistTimer = null;
+    try {
+      queuePersistence().write(jobManager.persistable());
+    } catch (err) {
+      // 落盘失败不能影响正在跑的任务：它是「增强」，不是链路的一环
+      logger.warn('queue snapshot persist failed', String(err));
+    }
+  }, PERSIST_INTERVAL_MS);
+  persistTimer.unref?.();
+}
+
+/**
+ * 启动时恢复上次没跑完的队列（TODO-12）。
+ *
+ * 判定「上次是不是崩溃」靠的正是这个文件还在不在：**正常退出会把它删掉**。
+ * 所以这里不需要任何退出码或心跳 —— 文件存在 = 上次没走到正常退出。
+ *
+ * 返回恢复出来的任务数，仅供启动日志使用。
+ */
+export function restoreQueueSnapshot(): number {
+  let n = 0;
+  try {
+    if (!getSettings().restoreQueue) return 0;
+    const items = queuePersistence().read();
+    if (items.length === 0) return 0;
+    const snapshot = jobManager.restore(items);
+    n = snapshot.items.length;
+    logger.info('queue restored', `${n} item(s)`);
+  } catch (err) {
+    // 恢复失败绝不能挡住启动：用户要的是「应用能打开」，队列丢了下次注意就行
+    logger.warn('queue restore failed', String(err));
+  }
+  return n;
+}
+
+/** 正常退出时清掉快照：只有崩溃/强杀才应该在下次启动时看到恢复提示 */
+export function clearQueueSnapshot(): void {
+  if (persistTimer) {
+    clearTimeout(persistTimer);
+    persistTimer = null;
+  }
+  try {
+    queuePersistence().clear();
+  } catch (err) {
+    logger.warn('queue snapshot clear failed', String(err));
+  }
+}
+
 export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
   // ── 事件转发：窗口可能还没建好，每次发送前判活 ──────────────
   const send = (channel: string, payload: unknown): void => {
@@ -118,7 +189,18 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
   });
 
   jobManager.attach({
-    onQueue: (snapshot: QueueSnapshot) => send(EV.queue, snapshot),
+    onQueue: (snapshot: QueueSnapshot) => {
+      send(EV.queue, snapshot);
+      // 托盘（TODO-14）也是队列快照的消费方，但它在 JobManager 之外，故走这个钩子
+      for (const fn of queueListeners) {
+        try {
+          fn(snapshot);
+        } catch {
+          /* 一个消费方崩了不该影响其余订阅者 */
+        }
+      }
+      schedulePersist();
+    },
 
     // 整批结束才通知（TODO-08）：10 个文件弹 10 条是骚扰，一条汇总才是信息
     onBatchFinished: (summary) => {

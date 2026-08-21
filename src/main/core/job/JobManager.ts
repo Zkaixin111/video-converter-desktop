@@ -5,18 +5,21 @@
  * **同一时刻仍然只跑一个 ffmpeg**（并发会抢 CPU、让进度失去意义、让失败归因变难），
  * 但排队、编辑、重试、失败暂停这些都属于队列层的事。
  *
- * 六条硬规则：
+ * 七条硬规则：
  *   1. 单并发：`activeId` 非空时绝不再 pump
  *   2. 输出路径在**入队时**就预定（`reserved` 集合），否则两个同名任务会算出同一个路径
  *   3. 完成/取消的任务立刻移出队列（结果进历史），失败的任务留在队列里标红等人处理
  *   4. 「失败即暂停」在**失败那一刻**读取设置，用户中途改设置也能生效
  *   5. 重试 = 重新规划 + 重新预定路径 + 状态回 pending，jobId 不变（日志与历史能对上）
  *   6. 所有终态都要释放预定、清空 activeId，然后 pump 下一个
+ *   7. 崩溃恢复（TODO-12）**不允许自动开跑**：restore() 只重建条目并保持暂停，
+ *      用户确认（甚至先改几个参数）之后才继续。批量任务重跑一遍很贵，
+ *      「自作主张」在这里比「多问一句」危险得多
  */
 import fs from 'node:fs';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
-import { AppError } from '../../../shared/errors';
+import { AppError, toAppError } from '../../../shared/errors';
 import { canEditTask, canRemoveTask, canRetryTask, clampConcurrency } from '../../../shared/queue';
 import type {
   AudioFormat,
@@ -28,6 +31,7 @@ import type {
   JobSnapshot,
   ConflictPolicy,
   MediaMeta,
+  PersistedQueueItem,
   PlanResult,
   PresetTier,
   ProgressPayload,
@@ -155,6 +159,11 @@ interface Entry {
   plan: PlanResult | null;
   audioPlan: AudioPlanResult | null;
   status: QueueItem['status'];
+  /**
+   * 这条是从上次崩溃里恢复出来的「没转完」的任务（TODO-12）。
+   * 保留到它真正跑完为止：界面要靠它解释「为什么会有这么一排任务」。
+   */
+  interrupted: boolean;
   progress?: ProgressPayload;
   result?: QueueItem['result'];
   error?: QueueItem['error'];
@@ -199,7 +208,8 @@ export class JobManager {
    */
   private activeIds = new Set<string>();
   private paused = false;
-  private pausedReason: 'failure' | null = null;
+  /** `failure` 失败即暂停、`manual` 用户主动暂停（TODO-13）、`restored` 崩溃恢复待确认（TODO-12） */
+  private pausedReason: QueueSnapshot['pausedReason'] = null;
   private reserved = new Set<string>();
   private sink: JobManagerSink = {};
   private lastSnapshot: JobSnapshot = { status: 'idle' };
@@ -291,6 +301,11 @@ export class JobManager {
     );
   }
 
+  /** 队列里未结束的任务（用于角标与「进行中」区块） */
+  private isRunning(status: QueueItem['status']): boolean {
+    return status === 'preparing' || status === 'running';
+  }
+
   private resetTally(): void {
     this.tally = { done: 0, failed: 0, cancelled: 0 };
   }
@@ -319,36 +334,27 @@ export class JobManager {
   enqueue(inputs: EnqueueInput[]): EnqueuedJob[] {
     if (inputs.length === 0) return [];
 
-    const naming = this.naming();
     const out: EnqueuedJob[] = [];
     for (const [idx, input] of inputs.entries()) {
       const audio = input.audio ?? null;
-      const plan = audio
-        ? null
-        : planConversion({
-            meta: input.meta,
-            target: input.target,
-            options: { preset: input.preset, overrides: this.overrides(input.target) },
-          });
-      const audioPlan = audio
-        ? planAudioExtraction({ meta: input.meta, format: audio, preset: input.preset })
-        : null;
-
-      const pathOptions: ResolveOptions = {
-        outputDir: input.outputDir ?? null,
-        exists: (p) => this.exists(p),
-        template: naming.template,
-        conflict: naming.conflict,
-        index: inputs.length > 1 ? idx : null,
-        total: inputs.length,
+      const { plan, audioPlan } = this.planFor({
+        meta: input.meta,
+        target: input.target,
         preset: input.preset,
-      };
+        audio,
+      });
 
       let outputPath: string;
       try {
-        outputPath = audio
-          ? resolveAudioPath(input.meta.path, audio, pathOptions)
-          : resolveOutputPath(input.meta.path, input.target, pathOptions);
+        outputPath = this.outputPathFor({
+          meta: input.meta,
+          target: input.target,
+          audio,
+          preset: input.preset,
+          outputDir: input.outputDir ?? null,
+          index: inputs.length > 1 ? idx : null,
+          total: inputs.length,
+        });
       } catch (err) {
         // 「同名就跳过」策略：这个文件不生成任务，其余照常入队
         if (err instanceof AppError && err.code === 'E_OUTPUT_SKIPPED') continue;
@@ -368,6 +374,7 @@ export class JobManager {
         plan,
         audioPlan,
         status: 'pending',
+        interrupted: false,
         createdAt: Date.now(),
         job: null,
       };
@@ -432,29 +439,22 @@ export class JobManager {
     }
 
     this.reserved.delete(norm(entry.outputPath));
-    // 音频提取任务改的是音质档位（码率），目标容器那一套不参与
-    const audioPlan = entry.audio
-      ? planAudioExtraction({ meta: entry.meta, format: entry.audio, preset: next.preset })
-      : null;
-    const plan = entry.audio
-      ? null
-      : planConversion({
-          meta: entry.meta,
-          target: next.target,
-          options: { preset: next.preset, overrides: this.overrides(next.target) },
-        });
-    const naming = this.naming();
-    const pathOptions: ResolveOptions = {
-      outputDir: entry.outputDir,
-      exists: (p) => this.exists(p),
-      template: naming.template,
-      // 改参数时用户就是想让它跑起来，重名一律按加序号处理
-      conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
+    // 音频提取任务改的是音质档位（码率），视频那一套 plan 不参与
+    const { plan, audioPlan } = this.planFor({
+      meta: entry.meta,
+      target: next.target,
       preset: next.preset,
-    };
-    const outputPath = entry.audio
-      ? resolveAudioPath(entry.meta.path, entry.audio, pathOptions)
-      : resolveOutputPath(entry.meta.path, next.target, pathOptions);
+      audio: entry.audio,
+    });
+    // 改参数时用户就是想让它跑起来，重名一律按加序号处理（见 outputPathFor 的 allowSkip）
+    const outputPath = this.outputPathFor({
+      meta: entry.meta,
+      target: next.target,
+      audio: entry.audio,
+      preset: next.preset,
+      outputDir: entry.outputDir,
+      allowSkip: false,
+    });
     this.reserved.add(norm(outputPath));
 
     entry.target = next.target;
@@ -532,28 +532,21 @@ export class JobManager {
     }
 
     this.reserved.delete(norm(entry.outputPath));
-    const audioPlan = entry.audio
-      ? planAudioExtraction({ meta: entry.meta, format: entry.audio, preset: entry.preset })
-      : null;
-    const plan = entry.audio
-      ? null
-      : planConversion({
-          meta: entry.meta,
-          target: entry.target,
-          options: { preset: entry.preset, overrides: this.overrides(entry.target) },
-        });
-    const naming = this.naming();
-    const pathOptions: ResolveOptions = {
-      outputDir: entry.outputDir,
-      exists: (p) => this.exists(p),
-      template: naming.template,
-      // 重试同理：重试意味着「就是要转」，跳过策略在这里不成立
-      conflict: naming.conflict === 'skip' ? 'rename' : naming.conflict,
+    const { plan, audioPlan } = this.planFor({
+      meta: entry.meta,
+      target: entry.target,
       preset: entry.preset,
-    };
-    const outputPath = entry.audio
-      ? resolveAudioPath(entry.meta.path, entry.audio, pathOptions)
-      : resolveOutputPath(entry.meta.path, entry.target, pathOptions);
+      audio: entry.audio,
+    });
+    // 重试同理：重试意味着「就是要转」，跳过策略在这里不成立
+    const outputPath = this.outputPathFor({
+      meta: entry.meta,
+      target: entry.target,
+      audio: entry.audio,
+      preset: entry.preset,
+      outputDir: entry.outputDir,
+      allowSkip: false,
+    });
     this.reserved.add(norm(outputPath));
 
     entry.plan = plan;
@@ -572,6 +565,131 @@ export class JobManager {
     this.emitQueue();
     this.pump();
     return this.list();
+  }
+
+  /**
+   * 崩溃恢复（TODO-12）：把落盘的队列条目重建回来。
+   *
+   * 与「入队」的四处不同，落脚点都是同一句话：**别自作主张**。
+   *   · **重新 plan**：跨了一次进程，编码引擎能力与精细调节设置都可能变了，
+   *     沿用旧 args 会转出一个「参数与界面显示不一致」的文件
+   *   · **重新定路径**：上次跑到一半可能已经留下半个文件，
+   *     按当前命名规则重定能绕开它（这是「恢复不覆盖好文件」的底线）
+   *   · **保持暂停**：用户确认之前一个都不跑
+   *   · **源文件没了就标失败**：比排到它时抛个看不懂的 ffmpeg 错误好交代
+   */
+  restore(items: PersistedQueueItem[]): QueueSnapshot {
+    this.entries = [];
+    this.reserved.clear();
+    this.activeIds.clear();
+    this.resetTally();
+    this.batchTotal = 0;
+
+    for (const item of items) {
+      const audio = item.audio ?? null;
+      const base = {
+        jobId: item.jobId,
+        meta: item.meta,
+        target: item.target,
+        preset: item.preset,
+        custom: item.custom ?? null,
+        outputDir: item.outputDir ?? null,
+        audio,
+        createdAt: item.createdAt,
+        interrupted: item.status !== 'error' && item.interrupted === true,
+        job: null as JobRunner | null,
+      };
+
+      // 源文件已经不在了：这条无论如何都跑不成，趁早说清楚，别让它在队列里假排队
+      if (!this.exists(item.meta.path)) {
+        this.entries.push({
+          ...base,
+          outputPath: item.outputPath,
+          plan: null,
+          audioPlan: null,
+          status: 'error',
+          error: {
+            code: 'E_FILE_NOT_FOUND',
+            message: '源文件已不在原位置，这个任务没法继续了。',
+            hint: '重新添加一次这个文件，或直接删除这条任务。',
+          },
+        });
+        this.reserved.add(norm(item.outputPath));
+        continue;
+      }
+
+      try {
+        const { plan, audioPlan } = this.planFor({
+          meta: item.meta,
+          target: item.target,
+          preset: item.preset,
+          audio,
+        });
+        const outputPath = this.outputPathFor({
+          meta: item.meta,
+          target: item.target,
+          audio,
+          preset: item.preset,
+          outputDir: item.outputDir ?? null,
+        });
+        this.reserved.add(norm(outputPath));
+        this.entries.push({
+          ...base,
+          outputPath,
+          plan,
+          audioPlan,
+          status: item.status === 'error' ? 'error' : 'pending',
+          error: item.status === 'error' ? item.error : undefined,
+        });
+      } catch (err) {
+        // 规划失败（例如源文件被换成了纯音频却要求转 MP4）也要留一条：
+        // 静默丢弃 = 用户以为转完了，结果少了一个文件
+        const e = toAppError(err);
+        this.entries.push({
+          ...base,
+          outputPath: item.outputPath,
+          plan: null,
+          audioPlan: null,
+          status: 'error',
+          error: { code: e.code, message: e.message, hint: e.hint },
+        });
+        this.reserved.add(norm(item.outputPath));
+      }
+    }
+
+    this.batchTotal = this.entries.length;
+    // 关键：**不 pump**。用户还没看过这批任务，凭什么替他决定继续跑
+    if (this.entries.length > 0) {
+      this.paused = true;
+      this.pausedReason = 'restored';
+    }
+    this.emitQueue();
+    return this.list();
+  }
+
+  /**
+   * 当前应该落盘的任务（TODO-12）。
+   *
+   * 只留三类：还没轮到的、上次轮到了但进程没了的、失败的。
+   * 成功与取消的任务已经进历史（TODO-07），再恢复一次就是重复劳动。
+   */
+  persistable(): PersistedQueueItem[] {
+    return this.entries
+      .filter((e) => e.status === 'pending' || e.status === 'error' || this.isRunning(e.status))
+      .map((e) => ({
+        jobId: e.jobId,
+        meta: e.meta,
+        target: e.target,
+        preset: e.preset,
+        custom: e.custom,
+        outputDir: e.outputDir,
+        outputPath: e.outputPath,
+        audio: e.audio,
+        status: e.status === 'error' ? 'error' : 'pending',
+        interrupted: e.interrupted || this.isRunning(e.status),
+        error: e.status === 'error' ? e.error : undefined,
+        createdAt: e.createdAt,
+      }));
   }
 
   resume(): QueueSnapshot {
@@ -708,6 +826,73 @@ export class JobManager {
     return this.entries.some((e) => e.status === 'error');
   }
 
+  /**
+   * 重算一批参数对应的转码方案。
+   *
+   * 入队、改参数、重试、崩溃恢复四处都要做这件事，抽出来是为了防止
+   * 「音频提取任务却按视频去 plan」这种只在某一处分叉才会出现的 bug。
+   */
+  private planFor(input: {
+    meta: MediaMeta;
+    target: ContainerKey;
+    preset: PresetTier;
+    audio: AudioFormat | null;
+  }): { plan: PlanResult | null; audioPlan: AudioPlanResult | null } {
+    if (input.audio) {
+      return {
+        plan: null,
+        audioPlan: planAudioExtraction({
+          meta: input.meta,
+          format: input.audio,
+          preset: input.preset,
+        }),
+      };
+    }
+    return {
+      plan: planConversion({
+        meta: input.meta,
+        target: input.target,
+        options: { preset: input.preset, overrides: this.overrides(input.target) },
+      }),
+      audioPlan: null,
+    };
+  }
+
+  /**
+   * 重算输出路径。
+   *
+   * `index` 只在**整批入队**时给：命名模板里的 `{index}` 需要知道一共有几个、
+   * 这是第几个。单任务的补充性操作（改参数 / 重试 / 恢复）传 null。
+   *
+   * `allowSkip`: 改参数、重试都是用户明确的「我就要它跑一次」，
+   * 此时「重名就跳过」策略不成立（跳过等于什么都不做），一律降级成加序号。
+   */
+  private outputPathFor(input: {
+    meta: MediaMeta;
+    target: ContainerKey;
+    audio: AudioFormat | null;
+    preset: PresetTier;
+    outputDir: string | null;
+    index?: number | null;
+    total?: number;
+    allowSkip?: boolean;
+  }): string {
+    const naming = this.naming();
+    const options: ResolveOptions = {
+      outputDir: input.outputDir,
+      exists: (p) => this.exists(p),
+      template: naming.template,
+      conflict:
+        naming.conflict === 'skip' && input.allowSkip === false ? 'rename' : naming.conflict,
+      index: input.index ?? null,
+      total: input.total ?? 1,
+      preset: input.preset,
+    };
+    return input.audio
+      ? resolveAudioPath(input.meta.path, input.audio, options)
+      : resolveOutputPath(input.meta.path, input.target, options);
+  }
+
   private emitQueue(): void {
     this.sink.onQueue?.(this.list());
   }
@@ -723,6 +908,7 @@ function toItem(entry: Entry): QueueItem {
     preset: entry.preset,
     custom: entry.custom,
     status: entry.status,
+    interrupted: entry.interrupted,
     mode: runnablePlan(entry)?.mode ?? null,
     audio: entry.audio,
     sourceSizeBytes: entry.meta.sizeBytes,

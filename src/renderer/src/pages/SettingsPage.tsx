@@ -291,6 +291,36 @@ export function SettingsPage(): ReactElement {
         </div>
       </div>
 
+      <div className="section-label">崩溃与退出</div>
+      <div className="setting-card">
+        <div className="setting-row">
+          <div className="s-body">
+            <div className="s-name">崩溃后恢复未完成的队列</div>
+            <div className="s-desc">
+              程序意外退出时，还没转换的任务会在下次启动时还原（按原参数），先等你确认再跑。
+              正常退出不会留下待恢复的队列。
+            </div>
+          </div>
+          <button
+            type="button"
+            className="switch"
+            role="switch"
+            aria-checked={settings?.restoreQueue ?? true}
+            aria-label="崩溃后恢复未完成的队列"
+            onClick={() => {
+              const next = !(settings?.restoreQueue ?? true);
+              void update({ restoreQueue: next });
+              toast(
+                next ? '意外退出后会还原未完成的队列，待你确认再跑' : '已关闭队列恢复',
+                'info',
+              );
+            }}
+          >
+            <i />
+          </button>
+        </div>
+      </div>
+
       <div className="section-label">外观</div>
       <div className="setting-card">
         <div className="setting-row">

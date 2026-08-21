@@ -1515,6 +1515,12 @@ svg {
   background: var(--success-bg);
   border-color: var(--success-border);
 }
+/* 「意外中断」（TODO-12）：恢复回来的任务用它标出来，与「仅音频」共用琥珀色提示系统 */
+.chip-interrupted {
+  color: var(--warn);
+  background: var(--bg-surface);
+  border-color: var(--warn-border);
+}
 
 /* 历史按结局筛选（TODO-07）：失败与取消也进历史后，不筛就等于在成功记录里翻失败 */
 .history-filter {

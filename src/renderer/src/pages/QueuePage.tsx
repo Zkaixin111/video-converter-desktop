@@ -31,6 +31,7 @@ import type {
   PresetTier,
   QueueItem,
   QueueMode,
+  QueueSnapshot,
 } from '../../../shared/types';
 import { TIERS } from '../lib/presets';
 import { fmtDur, fmtSize, fmtWhen } from '../lib/format';
@@ -318,6 +319,7 @@ function QueueRow({
               {item.audio ? AUDIO_FORMATS[item.audio].label : CONTAINERS[item.target].label}
             </span>
             {item.audio ? <span className="chip chip-audio">仅音频</span> : null}
+            {item.interrupted ? <span className="chip chip-interrupted">上次未完成</span> : null}
             {item.custom ? (
               <span className="chip chip-custom">自定义</span>
             ) : (
@@ -406,9 +408,23 @@ function QueueRow({
   );
 }
 
-/** 「失败即暂停」时顶部的提示条 */
-function PausedBanner(): ReactElement {
+/**
+ * 队列停下时的提示条。
+ *
+ * 三种「停」要说三种话（TODO-12 恢复了/TODO-13 手动暂停/失败即暂停）：
+ * 收成一句话「队列已暂停」的话，用户看不出这三者的差别，
+ * 尤其「崩溃恢复」如果只说「已暂停」，他会以为是刚才暂停的、点继续就把一批任务全跑了。
+ */
+function PausedBanner({ snapshot }: { snapshot: QueueSnapshot }): ReactElement {
   const resumeQueue = useAppStore((s) => s.resumeQueue);
+
+  const restored = snapshot.pausedReason === 'restored';
+  const title = restored ? '上次没跑完的任务已恢复' : '队列已暂停';
+  const desc = restored
+    ? `这是上次程序意外退出时还在队列里的 ${snapshot.items.length} 个任务，已按原参数还原（标「上次未完成」的是当时正在转的）。确认无误后继续；也可以先调整顺序或删掉不想再转的。`
+    : snapshot.pausedReason === 'manual'
+      ? '已按你的操作暂停：正在跑的这个会跑完，剩下的不会启动。随时可以继续。'
+      : '有任务转换失败，按设置里的「失败后暂停队列」停下了。处理完失败任务（重试或删除）后可继续，也可以直接继续。';
 
   return (
     <div className="queue-paused" role="status">
@@ -416,11 +432,8 @@ function PausedBanner(): ReactElement {
         <Icon name="i-alert" />
       </div>
       <div className="qp-body">
-        <div className="qp-title">队列已暂停</div>
-        <div className="qp-desc">
-          有任务转换失败，按设置里的「失败后暂停队列」停下了。处理完失败任务（重试或删除）后可继续，
-          也可以直接继续。
-        </div>
+        <div className="qp-title">{title}</div>
+        <div className="qp-desc">{desc}</div>
       </div>
       <Button variant="primary" onClick={() => void resumeQueue()}>
         继续队列
@@ -480,7 +493,7 @@ export function QueuePage(): ReactElement {
         </Button>
       </header>
 
-      {queue?.paused ? <PausedBanner /> : null}
+      {queue?.paused ? <PausedBanner snapshot={queue} /> : null}
 
       <div className="section-head">
         <div className="section-label">队列</div>

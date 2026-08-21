@@ -4,6 +4,7 @@ import { verifyBinaries } from './core/ffmpeg/paths';
 import { jobManager } from './core/job/JobManager';
 import { applyNativeTheme, windowBackgroundColor } from './ipc/app';
 import { registerAllIpc } from './ipc';
+import { clearQueueSnapshot, restoreQueueSnapshot } from './ipc/queue';
 import { logger } from './logger';
 
 /**
@@ -106,11 +107,15 @@ if (!gotTheLock) {
   // 退出前杀掉 ffmpeg，否则关掉窗口后它还在后台跑（用户会在任务管理器里发现）
   app.on('before-quit', () => {
     void jobManager.dispose();
+    // 正常退出必须清掉快照文件：它存在与否就是「上次是不是崩溃」的唯一依据（TODO-12）
+    clearQueueSnapshot();
   });
 
   app.whenReady().then(async () => {
     registerAllIpc(getWindow);
     applyNativeTheme();
+    // 依赖（策略/命名/并发）是 registerAllIpc 装配的，恢复必须排在它之后
+    restoreQueueSnapshot();
 
     // 自检不阻断启动：缺 ffmpeg 时主界面进引导态，而不是打不开
     const check = await verifyBinaries().catch((err) => {

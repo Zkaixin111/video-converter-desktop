@@ -241,6 +241,12 @@ export interface QueueItem {
   result?: JobResult;
   error?: JobError;
   createdAt: number;
+  /**
+   * 这条是上次崩溃 / 强杀时「正在跑」的任务被恢复回来的（TODO-12）。
+   * 它必须进城界面：用户走回来看到一排任务时会想知道为什么它们停在这，
+   * 以及这次能不能放心直接接着跑。
+   */
+  interrupted?: boolean;
 }
 
 export interface QueueSnapshot {
@@ -254,10 +260,47 @@ export interface QueueSnapshot {
    */
   batch: { total: number; settled: number } | null;
   paused: boolean;
-  /** 暂停原因：目前只有「失败即暂停」一种 */
-  pausedReason: 'failure' | null;
+  /** 暂停原因：`failure` 失败即暂停、`manual` 用户主动暂停、`restored` 崩溃恢复后等你确认 */
+  pausedReason: 'failure' | 'manual' | 'restored' | null;
   mode: QueueMode;
   policy: FailurePolicy;
+}
+
+/**
+ * 落到磁盘的一条队列任务（TODO-12）。
+ *
+ * 只持久化「重启后还能重跑」的那部分：源文件元信息 + 当时生效的参数。
+ * **不存** progress / result / job —— 它们是运行态，进程一没就全无意义，
+ * 存下来只会让下一次启动拿到一堆看起来还在跑的假数据。
+ */
+export interface PersistedQueueItem {
+  jobId: string;
+  meta: MediaMeta;
+  target: ContainerKey;
+  preset: PresetTier;
+  custom: TaskParams | null;
+  outputDir: string | null;
+  outputPath: string;
+  audio: AudioFormat | null;
+  /** `error` 的任务恢复后仍然标红等人处理，其余一律还原成 `pending` */
+  status: 'pending' | 'error';
+  /** 落盘那一刻它正在跑（进程随后没了）——恢复后要告诉用户「上次没转完」 */
+  interrupted?: boolean;
+  error?: JobError;
+  createdAt: number;
+}
+
+/**
+ * `userData/queue.json` 的结构（TODO-12）。
+ *
+ * `version` 是给自己留的后路：将来重命名字段时读到旧号直接丢弃，
+ * 总比用一堆 `??` 去猜一个将来可能不存在的形状强。
+ */
+export interface QueueFile {
+  version: 1;
+  /** 落盘时刻，用于诊断（「这份队列快照是什么时候的」） */
+  savedAt: number;
+  items: PersistedQueueItem[];
 }
 
 /**

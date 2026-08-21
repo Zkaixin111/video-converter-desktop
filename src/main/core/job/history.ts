@@ -6,14 +6,13 @@
  *   · 历史是「可丢数据」：坏了重来即可，绝不能因为它让应用起不来
  *
  * 三条硬规则：
- *   1. 写入走「临时文件 + rename」，避免断电/崩溃留下半个 JSON
+ *   1. 写入走 core/fs/jsonFile 的「临时文件 + rename」，避免断电/崩溃留下半个 JSON
  *   2. 读取任何异常都退化成空列表并打日志，不往外抛
  *   3. 按 id 幂等：同一 jobId 重复 add 不会产生两条
  */
-import fs from 'node:fs';
-import path from 'node:path';
 import { isPresetTier } from '../../../shared/containers';
 import type { HistoryEntry, HistoryStatus } from '../../../shared/types';
+import { readJsonFile, writeJsonFile } from '../fs/jsonFile';
 
 /** 超出就淘汰最旧的。100 条足够回看，再多会让队列页变成负担 */
 export const HISTORY_LIMIT = 100;
@@ -88,53 +87,17 @@ export class HistoryStore {
   }
 
   private read(): HistoryFile {
-    try {
-      const raw = fs.readFileSync(this.file, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<HistoryFile>;
-      if (!Array.isArray(parsed?.entries)) return { ...EMPTY, entries: [] };
-      // 逐条做最小校验：宁可丢掉一条坏数据，也不要让界面拿到 undefined 崩掉
-      const entries = parsed.entries.filter(
-        (e): e is HistoryEntry =>
-          !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.outputPath === 'string',
-      );
-      return { version: 1, entries: entries.map(normalizeEntry) };
-    } catch {
-      return { ...EMPTY, entries: [] };
-    }
+    const parsed = readJsonFile<Partial<HistoryFile>>(this.file);
+    if (!parsed || !Array.isArray(parsed.entries)) return { ...EMPTY, entries: [] };
+    // 逐条做最小校验：宁可丢掉一条坏数据，也不要让界面拿到 undefined 崩掉
+    const entries = parsed.entries.filter(
+      (e): e is HistoryEntry =>
+        !!e && typeof e === 'object' && typeof e.id === 'string' && typeof e.outputPath === 'string',
+    );
+    return { version: 1, entries: entries.map(normalizeEntry) };
   }
 
   private write(data: HistoryFile): void {
-    const dir = path.dirname(this.file);
-    fs.mkdirSync(dir, { recursive: true });
-    const tmp = `${this.file}.tmp`;
-    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
-
-    // rename 在 Windows 上偶发 EPERM/EBUSY：杀毒软件、搜索索引、刚被另一个
-    // 进程打开过的目标文件都会让替换瞬间失败。历史是「写一次就完了」的数据，
-    // 重试几次比直接丢掉这次记录划算（实测全量测试并发跑时会撞上）。
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      try {
-        fs.renameSync(tmp, this.file);
-        return;
-      } catch (err) {
-        lastErr = err;
-        const code = (err as NodeJS.ErrnoException).code;
-        if (code !== 'EPERM' && code !== 'EBUSY' && code !== 'EACCES') break;
-        sleepSync(20 * (attempt + 1));
-      }
-    }
-    throw lastErr;
+    writeJsonFile(this.file, data);
   }
-}
-
-/**
- * 同步小睡。
- *
- * 这里只能同步等待：write() 被 add() 同步调用，而 add() 在 job 的终态回调里，
- * 改成异步会把「历史写入」变成一条新的时序依赖。阻塞上限 200ms 且只在失败重试路径上。
- */
-function sleepSync(ms: number): void {
-  const buf = new Int32Array(new SharedArrayBuffer(4));
-  Atomics.wait(buf, 0, 0, ms);
 }
