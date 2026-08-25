@@ -1439,6 +1439,39 @@ svg {
   font-family: var(--font-mono);
 }
 
+/* ── 拖拽排序（TODO-13） ───────────────────────────────── */
+/* 把手只在等待中的行出现（.queue-row.is-pending），悬停整行才亮：
+   平时藏着不干扰阅读，上手要能一眼找到它是成果的前提 */
+.queue-row .q-grip {
+  display: flex;
+  align-items: center;
+  flex: none;
+  margin-left: -4px;
+  color: var(--text-tertiary);
+  cursor: grab;
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.queue-row.is-pending:hover .q-grip,
+.queue-row.is-pending:focus-visible .q-grip {
+  opacity: 1;
+}
+.queue-row.is-pending:focus-visible {
+  outline: 2px solid var(--primary-500);
+  outline-offset: 1px;
+}
+/* 被拖着的那一行：半透明 + 虚线边框，让人知道它「不在原位了」 */
+.queue-row.is-dragging {
+  opacity: 0.45;
+  border-style: dashed;
+  cursor: grabbing;
+}
+/* 落点提示：只画线不动布局，避免拖过时整列表反复重排 */
+.queue-row.is-drop {
+  border-color: var(--primary-500);
+  box-shadow: 0 0 0 2px var(--primary-100);
+}
+
 /* 历史记录列表（P1）：复用 .queue-row 的版式，只是没有进度条，靠列表间距分开 */
 .queue-list {
   display: flex;

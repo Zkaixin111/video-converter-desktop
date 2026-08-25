@@ -155,7 +155,12 @@ interface AppState {
   cancelQueueItem: (jobId: string) => Promise<void>;
   removeQueueItem: (jobId: string) => Promise<void>;
   retryQueueItem: (jobId: string) => Promise<void>;
+  /** 继续队列：解除暂停（失败触发的、手动的、崩溃恢复的都走这里） */
   resumeQueue: () => Promise<void>;
+  /** 主动暂停（TODO-13）：正在转的这个会跑完，后面的先不开始 */
+  pauseQueue: () => Promise<void>;
+  /** 调整位次（TODO-13）：负数上移、正数下移 */
+  reorderQueueItem: (jobId: string, delta: number) => Promise<void>;
   copyDiagnostics: () => Promise<void>;
   /** 打开日志所在目录（TODO-11） */
   openLogs: () => Promise<void>;
@@ -983,6 +988,23 @@ export const useAppStore = create<AppState>((set, get) => ({
     try {
       set({ queue: await call(window.api.resumeQueue()) });
       get().toast('队列已继续', 'info');
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  pauseQueue: async () => {
+    try {
+      set({ queue: await call(window.api.pauseQueue()) });
+      get().toast('队列已暂停：正在转的这个会跑完，后面的先不开始', 'info');
+    } catch (err) {
+      get().toast(messageOf(err), 'error');
+    }
+  },
+
+  reorderQueueItem: async (jobId, delta) => {
+    try {
+      set({ queue: await call(window.api.reorderQueueItem(jobId, delta)) });
     } catch (err) {
       get().toast(messageOf(err), 'error');
     }

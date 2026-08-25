@@ -117,6 +117,13 @@ const api = {
 
   resumeQueue: (): Promise<IpcResult<QueueSnapshot>> => ipcRenderer.invoke(CH.queueResume),
 
+  /** 主动暂停队列（TODO-13）：正在跑的那个会跑完，剩下的不启动 */
+  pauseQueue: (): Promise<IpcResult<QueueSnapshot>> => ipcRenderer.invoke(CH.queuePause),
+
+  /** 调整位次（TODO-13）：负数上移、正数下移，单位是「等待序列里的几位」 */
+  reorderQueueItem: (jobId: string, delta: number): Promise<IpcResult<QueueSnapshot>> =>
+    ipcRenderer.invoke(CH.queueReorder, { jobId, delta }),
+
   onProgress: (cb: (p: ProgressPayload) => void) => subscribe<ProgressPayload>(EV.progress, cb),
   onState: (cb: (s: JobSnapshot) => void) => subscribe<JobSnapshot>(EV.state, cb),
   onQueue: (cb: (s: QueueSnapshot) => void) => subscribe<QueueSnapshot>(EV.queue, cb),

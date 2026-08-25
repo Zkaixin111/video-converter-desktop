@@ -68,6 +68,18 @@ const ICONS = {
       <line x1="16.5" y1="15" x2="21" y2="15" />
     </>
   ),
+  /** 拖拽把手（TODO-13）：六个点，比常见的三条竖线更像「这里有东西可以挪」 */
+  'i-grip': (
+    <>
+      {/* 实心点：symbol 统一描边、不填充，这里显式覆盖成实心，小尺寸下才看得清 */}
+      <circle cx="9" cy="6" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="6" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="12" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="9" cy="18" r="1.4" fill="currentColor" stroke="none" />
+      <circle cx="15" cy="18" r="1.4" fill="currentColor" stroke="none" />
+    </>
+  ),
   'i-check': <polyline points="4 12.5 9.5 18 20 6.5" />,
   'i-alert': (
     <>

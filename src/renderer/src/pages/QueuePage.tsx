@@ -261,6 +261,17 @@ interface QueueRowProps {
   editing: boolean;
   onToggleEdit: () => void;
   onCloseEdit: () => void;
+  /* ── 拖拽排序（TODO-13） ─────────────────────────── */
+  /** 这一行正被拖着 */
+  dragging: boolean;
+  /** 有东西正悬停在这一行上方 */
+  over: boolean;
+  onDragStartRow: () => void;
+  onDragEnterRow: () => void;
+  onDropRow: () => void;
+  onDragEndRow: () => void;
+  /** Alt+↑ / Alt+↓：键盘用户的排序入口 */
+  onMoveStep: (delta: number) => void;
 }
 
 function QueueRow({
@@ -270,6 +281,13 @@ function QueueRow({
   editing,
   onToggleEdit,
   onCloseEdit,
+  dragging,
+  over,
+  onDragStartRow,
+  onDragEnterRow,
+  onDropRow,
+  onDragEndRow,
+  onMoveStep,
 }: QueueRowProps): ReactElement {
   const cancelItem = useAppStore((s) => s.cancelQueueItem);
   const removeItem = useAppStore((s) => s.removeQueueItem);
@@ -305,8 +323,51 @@ function QueueRow({
   return (
     <div className="queue-item">
       <div
-        className={`queue-row${failed ? ' is-failed' : ''}${waiting ? ' is-pending' : ''}`}
+        className={[
+          'queue-row',
+          failed ? 'is-failed' : '',
+          waiting ? 'is-pending' : '',
+          dragging ? 'is-dragging' : '',
+          over ? 'is-drop' : '',
+        ]
+          .filter(Boolean)
+          .join(' ')}
+        // 拖动改顺序：等待中的任务才能拖（正在跑的拖不动，改顺序也不该打断它）
+        draggable={waiting}
+        tabIndex={waiting ? 0 : undefined}
+        aria-grabbed={waiting ? dragging : undefined}
+        title={waiting ? '拖动调整顺序，或用 Alt + ↑ / ↓ 移动' : undefined}
+        onDragStart={(e) => {
+          if (!waiting) return;
+          e.dataTransfer.effectAllowed = 'move';
+          onDragStartRow();
+        }}
+        onDragEnter={() => {
+          if (waiting) onDragEnterRow();
+        }}
+        onDragOver={(e) => {
+          // 不 preventDefault 就收不到 drop —— 这是 HTML5 拖拽的默认约定
+          if (waiting) e.preventDefault();
+        }}
+        onDrop={(e) => {
+          if (!waiting) return;
+          e.preventDefault();
+          onDropRow();
+        }}
+        onDragEnd={onDragEndRow}
+        onKeyDown={(e) => {
+          if (!waiting || !e.altKey) return;
+          const step = e.key === 'ArrowUp' ? -1 : e.key === 'ArrowDown' ? 1 : 0;
+          if (step === 0) return;
+          e.preventDefault();
+          onMoveStep(step);
+        }}
       >
+        {waiting ? (
+          <span className="q-grip" aria-hidden="true">
+            <Icon name="i-grip" style={{ width: 14, height: 14 }} />
+          </span>
+        ) : null}
         <div className="q-ico">
           {item.audio ? AUDIO_FORMATS[item.audio].label : CONTAINERS[item.target].label}
         </div>
@@ -449,11 +510,17 @@ export function QueuePage(): ReactElement {
   const history = useAppStore((s) => s.history);
   const clearHistory = useAppStore((s) => s.clearHistory);
   const refreshQueue = useAppStore((s) => s.refreshQueue);
+  const pauseQueue = useAppStore((s) => s.pauseQueue);
+  const resumeQueue = useAppStore((s) => s.resumeQueue);
+  const reorderItem = useAppStore((s) => s.reorderQueueItem);
 
   const historyFilter = useAppStore((s) => s.historyFilter);
   const setHistoryFilter = useAppStore((s) => s.setHistoryFilter);
 
   const [editingId, setEditingId] = useState<string | null>(null);
+  /** 拖拽排序的两个瞬时状态：谁被拖着、正悬停在谁上面 */
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [overId, setOverId] = useState<string | null>(null);
 
   // 进页面拉一次最新快照：事件流可能有丢帧（窗口刚建好/刚从别的页面回来）
   useEffect(() => {
@@ -463,6 +530,28 @@ export function QueuePage(): ReactElement {
   // items 用 useMemo 固定引用：否则每次渲染都是新数组，下面那个清理编辑器的 effect 会白跑
   const items = useMemo(() => queue?.items ?? [], [queue]);
   const mode = queue?.mode ?? 'shared';
+  const paused = queue?.paused === true;
+  const hasLiveWork = items.some(
+    (i) => i.status === 'pending' || i.status === 'preparing' || i.status === 'running',
+  );
+
+  /**
+   * 等待中的任务序列。
+   *
+   * 拖拽与键盘都换算成「在等待序列里移动几位」：这条序列是用户眼里的排队顺序，
+   * 而数组里还可能夹着正在跑的任务——拿它在数组里的绝对下标会算错。
+   */
+  const pendingSeq = useMemo(
+    () => items.filter((i) => i.status === 'pending').map((i) => i.jobId),
+    [items],
+  );
+
+  const moveFrom = (jobId: string, targetId: string): void => {
+    const from = pendingSeq.indexOf(jobId);
+    const to = pendingSeq.indexOf(targetId);
+    if (from < 0 || to < 0 || from === to) return;
+    void reorderItem(jobId, to - from);
+  };
 
   // 进入终态后条目会被移出队列，编辑器不能指向一个已消失的任务
   useEffect(() => {
@@ -486,11 +575,22 @@ export function QueuePage(): ReactElement {
       <header className="page-head has-actions">
         <div>
           <h1>任务队列</h1>
-          <p>同一时刻只转换一个文件，其余任务按顺序排队；成功的结果会留在「最近记录」。</p>
+          <p>同一时刻最多按设置的并发数同时转换，其余任务按顺序排队；等待中的可以拖动调整顺序（也可用 Alt + ↑ / ↓）。</p>
         </div>
-        <Button variant="secondary" disabled={busy} onClick={() => void pickFiles()}>
-          添加文件
-        </Button>
+        <div style={{ display: 'flex', gap: 10, flex: 'none' }}>
+          {paused ? (
+            <Button variant="secondary" onClick={() => void resumeQueue()}>
+              继续队列
+            </Button>
+          ) : hasLiveWork ? (
+            <Button variant="secondary" onClick={() => void pauseQueue()}>
+              暂停队列
+            </Button>
+          ) : null}
+          <Button variant="secondary" disabled={busy} onClick={() => void pickFiles()}>
+            添加文件
+          </Button>
+        </div>
       </header>
 
       {queue?.paused ? <PausedBanner snapshot={queue} /> : null}
@@ -515,6 +615,20 @@ export function QueuePage(): ReactElement {
                 setEditingId((cur) => (cur === item.jobId ? null : item.jobId))
               }
               onCloseEdit={() => setEditingId(null)}
+              dragging={dragId === item.jobId}
+              over={overId === item.jobId && dragId !== null && dragId !== item.jobId}
+              onDragStartRow={() => setDragId(item.jobId)}
+              onDragEnterRow={() => setOverId(item.jobId)}
+              onDropRow={() => {
+                if (dragId && dragId !== item.jobId) moveFrom(dragId, item.jobId);
+                setDragId(null);
+                setOverId(null);
+              }}
+              onDragEndRow={() => {
+                setDragId(null);
+                setOverId(null);
+              }}
+              onMoveStep={(delta) => void reorderItem(item.jobId, delta)}
             />
           ))}
         </div>

@@ -48,3 +48,16 @@ export function requireArray(value: unknown, field: string): unknown[] {
   }
   return value;
 }
+
+/**
+ * 有限数字；NaN / Infinity / 字符串一律拒绝。
+ *
+ * 不在这里做取整与钳位：那是业务规则（比如排序位移允许正负几），
+ * 参数校验收不该替调用方做决定 —— 换成收到 '2' 也放行会掩盖渲染层的类型 bug。
+ */
+export function requireNumber(value: unknown, field: string): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new AppError('E_BAD_REQUEST', `参数 ${field} 必须是数字。`);
+  }
+  return value;
+}

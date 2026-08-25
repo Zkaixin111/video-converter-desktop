@@ -33,7 +33,7 @@ import { logger } from '../logger';
 import { notifyFinished } from '../notify';
 import { queuePersistence } from '../queuePersistence';
 import { getSettings } from '../store';
-import { requireAbsPath, requireArray, requireObject, requireString, wrap } from './wrap';
+import { requireAbsPath, requireArray, requireNumber, requireObject, requireString, wrap } from './wrap';
 
 function requireTarget(v: unknown): ContainerKey {
   requireString(v, 'target');
@@ -327,4 +327,13 @@ export function registerQueueIpc(getWindow: () => BrowserWindow | null): void {
   );
 
   ipcMain.handle(CH.queueResume, () => wrap<QueueSnapshot>(() => jobManager.resume()));
+
+  ipcMain.handle(CH.queuePause, () => wrap<QueueSnapshot>(() => jobManager.pause()));
+
+  ipcMain.handle(CH.queueReorder, (_e, payload: unknown) =>
+    wrap<QueueSnapshot>(() => {
+      const { jobId, delta } = requireObject(payload, 'payload');
+      return jobManager.reorder(requireString(jobId, 'jobId'), requireNumber(delta, 'delta'));
+    }),
+  );
 }

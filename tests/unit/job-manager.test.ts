@@ -323,3 +323,109 @@ describe('队列排空调度 · 不该汇报的情形', () => {
     ]);
   });
 });
+
+/**
+ * 顺序与暂停（TODO-13）。
+ *
+ * 「暂停」在这个项目里有三种来源，容易混淆：
+ *   失败触发（policy=pause）、崩溃恢复（restored）、用户主动（manual）。
+ * 它们共用同一个 `resume()` 出口，所以**区别只在 pausedReason** ——
+ * 界面据此说不同的话，测试则要保证三者不会被互相覆盖或混为一谈。
+ */
+describe('队列顺序与暂停 · TODO-13', () => {
+  it('主动暂停后，正在跑的那个不会被杀（它会跑完）', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b'), input('c')]);
+
+    jm.pause();
+    expect(jm.list().paused).toBe(true);
+    expect(jm.list().pausedReason).toBe('manual');
+    // 已经在跑的任务不因此中断：pause 的语义是「剩下的先别开始」
+    expect(nth(handles, 0).cancelRequested).toBe(false);
+  });
+
+  it('暂停期间不再启动新的任务', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b')]);
+    jm.pause();
+
+    nth(handles, 0).finish('done');
+    expect(handles).toHaveLength(1);
+    expect(jm.list().items.filter((i) => i.status === 'pending')).toHaveLength(1);
+  });
+
+  it('继续后从 pause 的位置接着跑，不重来', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b')]);
+    jm.pause();
+    nth(handles, 0).finish('done');
+    expect(handles).toHaveLength(1);
+
+    jm.resume();
+    expect(handles).toHaveLength(2);
+    expect(nth(handles, 1).jobId).toBe(jm.list().items[0].jobId);
+    // 同一个任务不会被第二次创建
+    expect(handles.filter((h) => h.jobId === nth(handles, 1).jobId)).toHaveLength(1);
+  });
+
+  it('调整顺序不影响正在跑的任务', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b'), input('c')]);
+    const runningId = nth(handles, 0).jobId;
+
+    const [b, c] = jm.list().items.filter((i) => i.status === 'pending');
+    jm.reorder(b.jobId, 1);
+
+    expect(jm.list().items[0].jobId).toBe(runningId);
+    expect(jm.list().items[1].jobId).toBe(c.jobId);
+    expect(jm.list().items[2].jobId).toBe(b.jobId);
+  });
+
+  it('下一个跑的会是拖到队首的那个', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b'), input('c')]);
+    nth(handles, 0).finish('done');
+
+    // c 拖到 b 前面（等待序列只有 b、c 两条）
+    const c = jm.list().items.find((i) => i.fileName === 'c.mp4');
+    expect(c).toBeDefined();
+    jm.reorder(c!.jobId, -1);
+
+    nth(handles, 1).finish('done');
+    expect(nth(handles, 2).jobId).toBe(c.jobId);
+  });
+
+  it('正在跑的任务不能被拖', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b')]);
+    const runningId = nth(handles, 0).jobId;
+    expect(() => jm.reorder(runningId, 1)).toThrow(/等待中/);
+  });
+
+  it('失败的任务不能被拖（它需要重试或删除，不是换位置）', () => {
+    const { jm, handles } = rig();
+    jm.enqueue([input('a'), input('b')]);
+    nth(handles, 0).finish('error');
+    const failedId = jm.list().items[0].jobId;
+    expect(() => jm.reorder(failedId, 1)).toThrow(/等待中/);
+  });
+
+  it('拖不存在的任务给出明确错误而不是静默成功', () => {
+    const { jm } = rig();
+    expect(() => jm.reorder('ghost', 1)).toThrow(/不存在/);
+  });
+
+  it('手动暂停覆盖失败暂停的原因，但恢复一次就都解开了', () => {
+    const { jm, handles } = rig('pause');
+    jm.enqueue([input('a'), input('b')]);
+    nth(handles, 0).finish('error');
+    expect(jm.list().pausedReason).toBe('failure');
+
+    jm.pause();
+    expect(jm.list().pausedReason).toBe('manual');
+
+    jm.resume();
+    expect(jm.list().paused).toBe(false);
+    expect(jm.list().pausedReason).toBeNull();
+  });
+});

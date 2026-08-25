@@ -20,7 +20,14 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { AppError, toAppError } from '../../../shared/errors';
-import { canEditTask, canRemoveTask, canRetryTask, clampConcurrency } from '../../../shared/queue';
+import {
+  canEditTask,
+  canRemoveTask,
+  canRetryTask,
+  canReorder,
+  clampConcurrency,
+  movePending,
+} from '../../../shared/queue';
 import type {
   AudioFormat,
   AudioPlanResult,
@@ -690,6 +697,38 @@ export class JobManager {
         error: e.status === 'error' ? e.error : undefined,
         createdAt: e.createdAt,
       }));
+  }
+
+  /**
+   * 调整等待中任务的位次（TODO-13）。
+   *
+   * 只改数组顺序，不动任何任务的状态机 —— 正在跑的那个照跑，
+   * 这也是「拖完顺序立即生效且不打断正在跑的任务」这条验收点的落点。
+   */
+  reorder(jobId: string, delta: number): QueueSnapshot {
+    const entry = this.mustFind(jobId);
+    if (!canReorder(entry.status)) {
+      throw new AppError('E_BAD_REQUEST', '只有等待中的任务能调整顺序。', {
+        hint: '正在转换的要先取消，失败的任务需要先重试或删除。',
+      });
+    }
+    this.entries = movePending(this.entries, jobId, delta);
+    this.emitQueue();
+    return this.list();
+  }
+
+  /**
+   * 主动暂停（TODO-13）。
+   *
+   * 刻意**不杀**正在跑的任务：此时的语义是「剩下的先别开始」，
+   * 而不是「立刻停下」——后者是取消（cancel）的职责。
+   * 用户临时要让出 CPU 时，跑了一半的成果不该被丢掉。
+   */
+  pause(): QueueSnapshot {
+    this.paused = true;
+    this.pausedReason = 'manual';
+    this.emitQueue();
+    return this.list();
   }
 
   resume(): QueueSnapshot {

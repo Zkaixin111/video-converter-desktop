@@ -89,3 +89,62 @@ export function isLiveTask(status: JobStatus): boolean {
 export function isFailedTask(status: JobStatus): boolean {
   return status === 'error';
 }
+
+/* ── 排序（TODO-13） ───────────────────────────────────── */
+
+/**
+ * 只有**等待中**的任务能挪位置。
+ *
+ * 正在跑的挪不动（ queues 语义里它已经挣脱了队列），
+ * 已失败的挪了也没意义——它需要的是重试或删除，不是换个位次再来一次。
+ */
+export function canReorder(status: JobStatus): boolean {
+  return status === 'pending';
+}
+
+/** 能被排序的最小形状：队列条目（渲染层）与内部 Entry（主进程）都满足 */
+export interface Orderable {
+  jobId: string;
+  status: JobStatus;
+}
+
+/**
+ * 按给定的 pending 顺序重排列表，**非 pending 的条目原地不动**。
+ *
+ * 为什么不直接「从原位置抽出来塞到目标位置」：
+ * 队列里正在跑的任务可能排在前面（并发 > 1 时更明显），抽出再插入会连带
+ * 改变非等待项的位置。把两件事分开更好推理：**非等待项守住自己的位置，
+ * 等待项按新顺序填进等待项的槽位**。
+ */
+export function reorderPending<T extends Orderable>(items: T[], order: string[]): T[] {
+  const byId = new Map(items.map((i) => [i.jobId, i]));
+  let cursor = 0;
+  return items.map((item) => {
+    if (item.status !== 'pending') return item;
+    const wanted = order[cursor];
+    cursor += 1;
+    // order 里没有对应项（调用方算错）时退回原位，总比重排出 undefined 好
+    return wanted ? (byId.get(wanted) ?? item) : item;
+  });
+}
+
+/**
+ * 把某个等待中的任务在**等待序列里**移动 `delta` 位（负数上移、正数下移）。
+ *
+ * 参数用「移动几位」而不是「移到第几位」：拖拽落到某一行、键盘 Alt+↑/↓
+ * 都能很自然地换算成同一个输入，两种交互共用一条执行路径。
+ * 越界自动停在两端，不会绕回队尾 —— 绕回是最反直觉的一种约定。
+ */
+export function movePending<T extends Orderable>(items: T[], jobId: string, delta: number): T[] {
+  const order = items.filter((i) => i.status === 'pending').map((i) => i.jobId);
+  const from = order.indexOf(jobId);
+  if (from < 0) return items;
+  const rawTo = from + (Number.isFinite(delta) ? Math.trunc(delta) : 0);
+  const to = Math.min(order.length - 1, Math.max(0, rawTo));
+  if (to === from) return items;
+
+  const next = [...order];
+  next.splice(from, 1);
+  next.splice(to, 0, jobId);
+  return reorderPending(items, next);
+}
