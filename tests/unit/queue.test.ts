@@ -16,6 +16,8 @@ import {
   movePending,
   reorderPending,
   resolveTaskParams,
+  pausedLabel,
+  traySummary,
   type Orderable,
 } from '../../src/shared/queue';
 import type { ContainerKey, JobStatus, PresetTier } from '../../src/shared/types';
@@ -195,5 +197,102 @@ describe('队列排序 · 纯函数', () => {
     const rows = [row('a', 'pending'), row('b', 'pending')];
     movePending(rows, 'a', 1);
     expect(names(rows)).toEqual(['a', 'b']);
+  });
+});
+
+describe('托盘摘要 · TODO-14', () => {
+  /** 只带托盘摘要用得到的那几个字段 */
+  const snap = (partial: {
+    items?: PartialQueueItem[];
+    batch?: { total: number; settled: number } | null;
+    paused?: boolean;
+    pausedReason?: 'failure' | 'manual' | 'restored' | null;
+  }) => ({
+    items: partial.items ?? [],
+    activeId: null,
+    activeIds: [],
+    batch: partial.batch ?? null,
+    paused: partial.paused ?? false,
+    pausedReason: partial.pausedReason ?? null,
+    mode: 'single' as const,
+    policy: 'continue' as const,
+  });
+
+  type PartialQueueItem = {
+    jobId: string;
+    status: JobStatus;
+    progress?: { pct: number };
+  };
+
+  it('队列空着的时候只报名字', () => {
+    const s = traySummary(snap({}), '视频转换器');
+    expect(s.tooltip).toBe('视频转换器');
+    expect(s.live).toBe(false);
+    expect(s.pct).toBeNull();
+  });
+
+  it('有批次时报「已定局 / 总数」', () => {
+    const s = traySummary(snap({ batch: { total: 10, settled: 3 } }), '视频转换器');
+    expect(s.tooltip).toBe('视频转换器 · 3/10');
+    expect(s.counts).toEqual({ total: 10, settled: 3 });
+  });
+
+  it('跑起来之后带上百分比', () => {
+    const s = traySummary(
+      snap({
+        batch: { total: 10, settled: 3 },
+        items: [{ jobId: 'a', status: 'running', progress: { pct: 45 } }],
+      }),
+      '视频转换器',
+    );
+    expect(s.tooltip).toBe('视频转换器 · 3/10 · 45%');
+    expect(s.running).toBe(true);
+  });
+
+  it('并发时取平均进度，而不是抢跑的那一个', () => {
+    const s = traySummary(
+      snap({
+        items: [
+          { jobId: 'a', status: 'running', progress: { pct: 90 } },
+          { jobId: 'b', status: 'running', progress: { pct: 10 } },
+        ],
+      }),
+      '视频转换器',
+    );
+    expect(s.pct).toBe(50);
+  });
+
+  it('任务还在 preparing、没出进度时不瞎编百分比', () => {
+    const s = traySummary(snap({ items: [{ jobId: 'a', status: 'preparing' }] }), '视频转换器');
+    expect(s.pct).toBeNull();
+    expect(s.tooltip).toBe('视频转换器');
+  });
+
+  it('暂停要排在进度前面：先看懂异常，再看数字', () => {
+    const manual = traySummary(
+      snap({ batch: { total: 4, settled: 1 }, paused: true, pausedReason: 'manual' }),
+      '视频转换器',
+    );
+    expect(manual.tooltip).toBe('视频转换器 · 队列已暂停 · 1/4');
+    expect(manual.paused).toBe(true);
+  });
+
+  it('失败导致的暂停要说清是失败的锅', () => {
+    expect(pausedLabel('failure')).toBe('有任务失败，队列已暂停');
+    expect(pausedLabel('restored')).toBe('等待你确认');
+    expect(pausedLabel(null)).toBeNull();
+  });
+
+  it('整批跑完之后，托盘上还能看到刚才那批的账', () => {
+    const s = traySummary(snap({ batch: { total: 4, settled: 4 } }), '视频转换器');
+    expect(s.tooltip).toBe('视频转换器 · 4/4');
+    // 没有活儿了，菜单里的「暂停队列」应当是不可点的
+    expect(s.live).toBe(false);
+  });
+
+  it('只要还有待跑的任务就算「还有活儿」', () => {
+    const s = traySummary(snap({ items: [{ jobId: 'a', status: 'pending' }] }), '视频转换器');
+    expect(s.live).toBe(true);
+    expect(s.running).toBe(false);
   });
 });

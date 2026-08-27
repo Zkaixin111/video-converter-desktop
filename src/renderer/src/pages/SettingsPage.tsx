@@ -295,6 +295,34 @@ export function SettingsPage(): ReactElement {
       <div className="setting-card">
         <div className="setting-row">
           <div className="s-body">
+            <div className="s-name">关闭窗口时最小化到托盘</div>
+            <div className="s-desc">
+              点右上角 × 时窗口只是藏起来，程序继续运行，正在转换的任务不受影响。
+              要彻底退出，右键托盘图标选「退出」。关掉这项就回到原来的「关窗即退出」。
+            </div>
+          </div>
+          <button
+            type="button"
+            className="switch"
+            role="switch"
+            aria-checked={settings?.closeToTray ?? true}
+            aria-label="关闭窗口时最小化到托盘"
+            onClick={() => {
+              const next = !(settings?.closeToTray ?? true);
+              void update({ closeToTray: next });
+              toast(
+                next
+                  ? '关窗后会藏到托盘继续转，从托盘菜单退出才是真正退出'
+                  : '已恢复「关窗即退出」',
+                'info',
+              );
+            }}
+          >
+            <i />
+          </button>
+        </div>
+        <div className="setting-row">
+          <div className="s-body">
             <div className="s-name">崩溃后恢复未完成的队列</div>
             <div className="s-desc">
               程序意外退出时，还没转换的任务会在下次启动时还原（按原参数），先等你确认再跑。

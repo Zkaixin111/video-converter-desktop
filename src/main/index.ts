@@ -6,6 +6,8 @@ import { applyNativeTheme, windowBackgroundColor } from './ipc/app';
 import { registerAllIpc } from './ipc';
 import { clearQueueSnapshot, restoreQueueSnapshot } from './ipc/queue';
 import { logger } from './logger';
+import { getSettings } from './store';
+import { createTray, destroyTray, hasTray, notifyTrayOnce } from './tray';
 
 /**
  * 构建产物结构（由 vite-plugin-electron 决定，配置见 vite.config.ts）
@@ -32,7 +34,33 @@ app.setAppUserModelId('com.zkaixin.videoconverter');
 
 let win: BrowserWindow | null = null;
 
+/**
+ * 「这次是真的要退出」（TODO-14）。
+ *
+ * 关窗被改成隐藏之后，「窗口关闭」不再等价于「应用要结束」，
+ * 于是必须有一个显式的标志把两件事分开；否则 close 一律被拦下来，
+ * 用户会发现程序怎么都退不掉。
+ */
+let quitting = false;
+
 const getWindow = (): BrowserWindow | null => win;
+
+/** 把窗口叫回前台 —— 托盘单击、系统通知点击、第二个实例启动共用这一个出口 */
+function focusWindow(): void {
+  if (win && !win.isDestroyed()) {
+    if (win.isMinimized()) win.restore();
+    if (!win.isVisible()) win.show();
+    win.focus();
+    return;
+  }
+  createWindow();
+}
+
+/** 唯一的退出入口：托盘菜单的「退出」 */
+function requestQuit(): void {
+  quitting = true;
+  app.quit();
+}
 
 function createWindow(): void {
   win = new BrowserWindow({
@@ -80,6 +108,26 @@ function createWindow(): void {
   win.on('closed', () => {
     win = null;
   });
+
+  /**
+   * 关窗 ≠ 退出（TODO-14）。
+   *
+   * 开了「最小化到托盘」时，右上角 × 只是把窗口藏起来：队列继续跑，
+   * ffmpeg 子进程不受影响。三条路径要分清楚：
+   *   · 用户点 ×        → quitting 为假，拦下来改成 hide
+   *   · 托盘菜单退出     → requestQuit() 先把 quitting 置真再 app.quit()
+   *   · before-quit     → 同样置真，避免任何别的退出路径被这里误拦
+   *
+   * 托盘没创建成功时（`hasTray()` 为假）必须放行：否则藏起来的窗口没人
+   * 能叫回来，退出入口也就跟着一起没了 —— 等于把程序锁死在后台。
+   */
+  win.on('close', (event) => {
+    if (quitting) return;
+    if (!hasTray() || !getSettings().closeToTray) return;
+    event.preventDefault();
+    if (win) win.hide();
+    notifyTrayOnce();
+  });
 }
 
 // 单实例：重复启动时聚焦已有窗口，而不是开第二个
@@ -89,11 +137,7 @@ const gotTheLock = app.requestSingleInstanceLock();
 if (!gotTheLock) {
   app.quit();
 } else {
-  app.on('second-instance', () => {
-    if (!win) return;
-    if (win.isMinimized()) win.restore();
-    win.focus();
-  });
+  app.on('second-instance', () => focusWindow());
 
   app.on('window-all-closed', () => {
     // macOS 上关闭窗口不退出应用，这是平台惯例
@@ -106,6 +150,9 @@ if (!gotTheLock) {
 
   // 退出前杀掉 ffmpeg，否则关掉窗口后它还在后台跑（用户会在任务管理器里发现）
   app.on('before-quit', () => {
+    // 关窗已被改成隐藏（TODO-14），这里必须明确告诉 close 处理器「这次是真的走」
+    quitting = true;
+    destroyTray();
     void jobManager.dispose();
     // 正常退出必须清掉快照文件：它存在与否就是「上次是不是崩溃」的唯一依据（TODO-12）
     clearQueueSnapshot();
@@ -133,5 +180,8 @@ if (!gotTheLock) {
     }
 
     createWindow();
+    // 托盘要在窗口之后：菜单里的「显示主窗口」得先有个窗口可叫回来。
+    // 托盘画不出来时 createTray 返回 null —— 那就退回「关窗即退出」，不影响使用。
+    createTray({ focusWindow, requestQuit });
   });
 }

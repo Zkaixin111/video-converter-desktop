@@ -9,6 +9,7 @@ import type {
   ContainerKey,
   JobStatus,
   PresetTier,
+  QueueSnapshot,
   TaskParams,
 } from './types';
 
@@ -147,4 +148,73 @@ export function movePending<T extends Orderable>(items: T[], jobId: string, delt
   next.splice(from, 1);
   next.splice(to, 0, jobId);
   return reorderPending(items, next);
+}
+
+/* ── 托盘摘要（TODO-14） ─────────────────────────────── */
+
+/** 暂停原因的短标签：托盘 tooltip 和菜单都只放得下一句话 */
+const PAUSED_LABEL: Record<NonNullable<QueueSnapshot['pausedReason']>, string> = {
+  failure: '有任务失败，队列已暂停',
+  manual: '队列已暂停',
+  restored: '等待你确认',
+};
+
+export function pausedLabel(reason: QueueSnapshot['pausedReason']): string | null {
+  return reason ? PAUSED_LABEL[reason] : null;
+}
+
+export interface TraySummary {
+  /** 队列里还有活儿吗（在跑 + 在等） */
+  live: boolean;
+  /** 有任务正在跑吗 */
+  running: boolean;
+  /** 队列是否处于暂停（菜单要给的是「继续」还是「暂停」，取决于它） */
+  paused: boolean;
+  /** 已定局 / 总数；没有批次时给 null */
+  counts: { settled: number; total: number } | null;
+  /** 在跑任务的平均进度（0–99）；还没出进度时为 null */
+  pct: number | null;
+  /** tooltip 全文 */
+  tooltip: string;
+  /**  tray 菜单里的状态行 */
+  statusLine: string;
+}
+
+/**
+ * 托盘要显示的那句话（TODO-14）。
+ *
+ * 窗口藏起来之后，用户唯一能看到的就是这一行字，所以它的取舍是
+ * **先说异常、再说进度**：「有任务失败，队列已暂停」比「3/10」重要得多，
+ * 而一个还在跑的百分比，恰好回答了「它是不是真的还在转」。
+ */
+export function traySummary(snapshot: QueueSnapshot, appName: string): TraySummary {
+  const items = snapshot.items ?? [];
+  const live = items.some((i) => isLiveTask(i.status));
+  const running = items.some((i) => i.status === 'running' || i.status === 'preparing');
+
+  const pcts = items
+    .filter((i) => (i.status === 'running' || i.status === 'preparing') && i.progress)
+    .map((i) => i.progress?.pct ?? 0);
+  // 并发时取平均：某个任务跑到 90% 而另一个刚起步，报哪个都不诚实
+  const pct = pcts.length > 0 ? Math.round(pcts.reduce((a, b) => a + b, 0) / pcts.length) : null;
+
+  const counts = snapshot.batch ?? null;
+
+  const parts: string[] = [];
+  if (counts) parts.push(`${counts.settled}/${counts.total}`);
+  if (pct !== null) parts.push(`${pct}%`);
+
+  const label = pausedLabel(snapshot.pausedReason);
+  if (label) parts.unshift(label);
+
+  const detail = parts.join(' · ');
+  return {
+    live,
+    running,
+    paused: snapshot.paused === true,
+    counts,
+    pct,
+    tooltip: detail ? `${appName} · ${detail}` : appName,
+    statusLine: detail || (appName ?? ''),
+  };
 }

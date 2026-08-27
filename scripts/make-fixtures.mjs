@@ -59,6 +59,15 @@ run([...SRC.slice(0, 4), '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 
 console.log('· sample-audio.m4a（纯音频，用于验证 video:null）');
 run(['-f', 'lavfi', '-i', 'sine=frequency=440:duration=2', '-c:a', 'aac', path.join(OUT, 'sample-audio.m4a')]);
 
+console.log('· sample-long.mp4（720p × 60 秒，给托盘 / 退出这类时序验证用：转得太快就观察不到中间态）');
+run([
+  '-f', 'lavfi', '-i', 'testsrc2=size=1280x720:rate=24:duration=60',
+  '-f', 'lavfi', '-i', 'sine=frequency=440:duration=60',
+  '-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p',
+  '-c:a', 'aac', '-b:a', '96k', '-shortest',
+  path.join(OUT, 'sample-long.mp4'),
+]);
+
 console.log('· sample-broken.mp4（截断到 40%，用于验证 moov atom 报错）');
 const buf = fs.readFileSync(base);
 fs.writeFileSync(path.join(OUT, 'sample-broken.mp4'), buf.subarray(0, Math.floor(buf.length * 0.4)));
